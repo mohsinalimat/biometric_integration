@@ -195,6 +195,15 @@ def _ebkn(cmd_doc: Any, user_doc: Any) -> Optional[dict]:
             "body": json.dumps({"user_id": uid}),
         }
 
+    if cmd_doc.command_type == "Update User":
+        # SET_USER_PROFILE: name + privilege only, no biometrics required.
+        # Registers the user on the device so they can clock in with their PIN.
+        return {
+            "trans_id": cmd_doc.name,
+            "cmd_code": "SET_USER_PROFILE",
+            "body": json.dumps({"user_id": uid, "user_name": user_doc.employee_name or "", "privilege": 0}),
+        }
+
     if cmd_doc.command_type == "Enroll User":
         blob = _load_blob(user_doc.ebkn_enroll_data)
         if not blob:

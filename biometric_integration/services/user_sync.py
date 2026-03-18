@@ -60,7 +60,7 @@ def on_employee_update(doc, method=None) -> None:
                 _re_enroll_on_all_devices(user_doc, doc)
 
         if name_before != name_after and status_after not in _INACTIVE_STATUSES:
-            _update_user_info_on_zkteco(user_doc, doc)
+            _update_user_info(user_doc, doc)
 
     # Trigger device sync when attendance_device_id is set or changes
     settings = frappe.get_cached_doc("Attendance Integration Settings")
@@ -76,8 +76,8 @@ def on_employee_update(doc, method=None) -> None:
 # ---------------------------------------------------------------------------
 
 def on_employee_linked(user_doc) -> None:
-    """Sync updated employee name to ZKTeco devices when user gets linked to employee."""
-    _update_user_info_on_zkteco(user_doc)
+    """Sync updated employee name to all devices when user gets linked to employee."""
+    _update_user_info(user_doc)
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +111,14 @@ def sync_employee_to_devices(employee_doc) -> bool:
         })
         user_doc.insert(ignore_permissions=True)
 
-    # Queue Update User on ZKTeco devices only (name/PIN sync — no biometrics needed)
+    # Queue Update User on all applicable devices.
+    # ZKTeco: DATA UPDATE USERINFO (name + PIN, no biometrics needed)
+    # EBKN: SET_USER_PROFILE (name + privilege, no biometrics needed)
     company = _employee_company(employee_doc)
     queued = 0
     for dev_id, brand in _get_user_devices(user_doc, company=company).items():
-        if brand == "ZKTeco":
-            add_command(dev_id, user_doc.name, brand, "Update User")
-            queued += 1
+        add_command(dev_id, user_doc.name, brand, "Update User")
+        queued += 1
     if queued:
         frappe.db.commit()
     return queued > 0
@@ -182,10 +183,9 @@ def _re_enroll_on_all_devices(user_doc, employee_doc=None) -> None:
     frappe.db.commit()
 
 
-def _update_user_info_on_zkteco(user_doc, employee_doc=None) -> None:
-    """Queue Update User on ZKTeco devices so the device shows the correct name."""
+def _update_user_info(user_doc, employee_doc=None) -> None:
+    """Queue Update User on all devices (ZKTeco: USERINFO, EBKN: SET_USER_PROFILE)."""
     company = _employee_company(employee_doc) if employee_doc else None
     for device_id, brand in _get_user_devices(user_doc, company=company).items():
-        if brand == "ZKTeco":
-            add_command(device_id, user_doc.name, brand, "Update User")
+        add_command(device_id, user_doc.name, brand, "Update User")
     frappe.db.commit()
