@@ -683,24 +683,36 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
 def _store_registry_capabilities(sn: str, body: str) -> None:
     """Parse ZKTeco registry POST body and store capability fields on the device record.
 
-    Most firmware sends URL-encoded form data on a single line:
-      SN=xxx&FirmVer=14.00&DeviceName=MB360&MAC=00:17:61:xx:xx:xx&MaxUserCount=3000&...
-    Some older firmware sends newline-separated key=value pairs.
-    We handle both formats.
+    Three wire formats observed in the wild:
+    1. Comma-separated (ADMS spec):
+         DeviceType=acc,~DeviceName=MB360,FirmVer=14.00,MAC=00:17:61:xx:xx:xx,...
+    2. URL-encoded (some firmware):
+         SN=xxx&FirmVer=14.00&MAC=00:17:61:xx:xx:xx&MaxUserCount=3000&...
+    3. Newline-separated (older firmware):
+         FirmVer=14.00\nMAC=00:17:61:xx:xx:xx\n...
+
+    Fields prefixed with ~ in the ADMS spec are optional; we strip the tilde.
     """
     from urllib.parse import parse_qs
 
     kv: dict = {}
     body = body.strip()
 
-    if "&" in body:
-        # URL-encoded form data (most firmware versions)
+    if "&" in body and "\n" not in body:
+        # URL-encoded form data
         for k, vals in parse_qs(body, keep_blank_values=True).items():
             kv[k.strip()] = vals[0] if vals else ""
+    elif "," in body and "=" in body and "\n" not in body:
+        # Comma-separated ADMS spec format — strip optional ~ prefix on keys
+        for part in body.split(","):
+            part = part.strip().lstrip("~")
+            if "=" in part:
+                k, _, v = part.partition("=")
+                kv[k.strip()] = v.strip()
     else:
         # Newline-separated key=value (older firmware)
         for line in body.splitlines():
-            line = line.strip()
+            line = line.strip().lstrip("~")
             if "=" in line:
                 k, _, v = line.partition("=")
                 kv[k.strip()] = v.strip()
