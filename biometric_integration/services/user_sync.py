@@ -111,13 +111,19 @@ def sync_employee_to_devices(employee_doc) -> bool:
         })
         user_doc.insert(ignore_permissions=True)
 
-    # Queue Update User on all applicable devices.
+    # Queue Update User on all active devices (company-filtered if needed).
+    # We bypass user_doc.devices here because a freshly created Device User has
+    # an empty device list — query devices directly instead.
     # ZKTeco: DATA UPDATE USERINFO (name + PIN, no biometrics needed)
     # EBKN: SET_USER_PROFILE (name + privilege, no biometrics needed)
     company = _employee_company(employee_doc)
+    filters = {"disabled": 0}
+    if company:
+        filters["company"] = company
+    devices = frappe.get_all("Attendance Device", filters=filters, fields=["name", "brand"])
     queued = 0
-    for dev_id, brand in _get_user_devices(user_doc, company=company).items():
-        add_command(dev_id, user_doc.name, brand, "Update User")
+    for d in devices:
+        add_command(d.name, user_doc.name, d.brand, "Update User")
         queued += 1
     if queued:
         frappe.db.commit()
