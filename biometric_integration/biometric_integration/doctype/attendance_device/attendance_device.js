@@ -4,6 +4,7 @@
 frappe.ui.form.on('Attendance Device', {
 	refresh(frm) {
 		_init_timezone_field(frm);
+		_toggle_company_mandatory(frm);
 		if (frm.is_new()) return;
 
 		// --- Status indicator ---
@@ -273,4 +274,19 @@ function _poll_door_unlock(dialog, cmd_name, attempts) {
 			},
 		});
 	}, 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Company field — mandatory when devices_are_company_specific is on
+// ---------------------------------------------------------------------------
+
+function _toggle_company_mandatory(frm) {
+	frappe.call({
+		method: 'biometric_integration.api.get_device_form_settings',
+		callback(r) {
+			const required = r.message && r.message.devices_are_company_specific;
+			frm.set_df_property('company', 'reqd', required ? 1 : 0);
+			frm.set_df_property('company', 'hidden', 0); // always visible
+		},
+	});
 }

@@ -32,8 +32,14 @@ default_log_clearing_doctypes = {
 # --- Document Events ---
 doc_events = {
     "Employee": {
+        "after_insert": "biometric_integration.services.user_sync.on_employee_create",
         "on_update": "biometric_integration.services.user_sync.on_employee_update",
     },
+}
+
+# --- List View Extensions ---
+doctype_list_js = {
+    "Employee": "biometric_integration/public/js/employee_list.js",
 }
 
 # --- Fixtures (custom fields + property setters applied on bench migrate) ---
