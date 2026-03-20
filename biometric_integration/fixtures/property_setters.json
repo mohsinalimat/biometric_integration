@@ -22,5 +22,17 @@
   "property_type": "Text",
   "owner": "Administrator",
   "modified_by": "Administrator"
+ },
+ {
+  "doctype": "Property Setter",
+  "name": "Employee-attendance_device_id-mandatory_depends_on",
+  "doctype_or_field": "DocField",
+  "doc_type": "Employee",
+  "field_name": "attendance_device_id",
+  "property": "mandatory_depends_on",
+  "value": "eval:doc.create_user_in_device",
+  "property_type": "Code",
+  "owner": "Administrator",
+  "modified_by": "Administrator"
  }
 ]

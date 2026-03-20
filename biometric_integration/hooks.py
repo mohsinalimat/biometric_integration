@@ -29,6 +29,11 @@ default_log_clearing_doctypes = {
     "Attendance Device Command": 90,
 }
 
+# --- Employee form extension ---
+doctype_js = {
+    "Employee": "biometric_integration/public/js/employee.js",
+}
+
 # --- Document Events ---
 doc_events = {
     "Employee": {
@@ -49,7 +54,11 @@ fixtures = [
     },
     {
         "dt": "Property Setter",
-        "filters": [["name", "in", ["Employee Checkin-device_id-fieldtype", "Employee Checkin-device_id-options"]]],
+        "filters": [["name", "in", [
+            "Employee Checkin-device_id-fieldtype",
+            "Employee Checkin-device_id-options",
+            "Employee-attendance_device_id-mandatory_depends_on",
+        ]]],
     },
 ]
 
