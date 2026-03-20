@@ -37,6 +37,7 @@ doctype_js = {
 # --- Document Events ---
 doc_events = {
     "Employee": {
+        "validate": "biometric_integration.services.user_sync.validate_employee",
         "on_update": "biometric_integration.services.user_sync.on_employee_update",
     },
 }

@@ -29,8 +29,21 @@ _BRAND_BLOB_FIELD = {"ZKTeco": "zkteco_enroll_data", "EBKN": "ebkn_enroll_data"}
 
 
 # ---------------------------------------------------------------------------
-# Employee hook
+# Employee hooks
 # ---------------------------------------------------------------------------
+
+def validate_employee(doc, method=None) -> None:
+    """Frappe doc_events validate hook — runs before save."""
+    if not doc.get("create_user_in_device"):
+        return
+    device_id = (doc.get("attendance_device_id") or "").strip()
+    if device_id and not device_id.isdigit():
+        frappe.throw(
+            frappe._("Attendance Device ID must be a numeric value. "
+                     "ZKTeco and EBKN devices only support integer user IDs."),
+            title=frappe._("Invalid Device ID"),
+        )
+
 
 def on_employee_update(doc, method=None) -> None:
     """Frappe doc_events on_update hook — called on every Employee save."""
