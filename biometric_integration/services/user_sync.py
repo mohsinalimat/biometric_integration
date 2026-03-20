@@ -5,12 +5,13 @@
 User sync service: reacts to Employee lifecycle events and propagates changes
 to biometric devices.
 
-  Employee created (after_insert)         → create/link Device User, queue Update User (if sync enabled)
-  Employee attendance_device_id changes   → same as above (if sync enabled)
-  Employee goes inactive/left             → queue Delete User on all devices
-  Employee reactivated                    → queue Enroll User on all devices (if template exists)
-  Employee name changes                   → queue Update User on ZKTeco devices
-  Attendance Device User gets employee link → queue Update User on ZKTeco devices
+  Employee save with create_user_in_device=1  → create/link Device User for
+                                                selected device, queue Update User
+  Employee attendance_device_id changes        → same as above (if checkbox is on)
+  Employee goes inactive/left                  → queue Delete User on all devices
+  Employee reactivated                         → queue Enroll User on all devices
+  Employee name changes                        → queue Update User on all devices
+  Attendance Device User gets employee link    → queue Update User on all devices
 """
 
 from __future__ import annotations
@@ -28,24 +29,19 @@ _BRAND_BLOB_FIELD = {"ZKTeco": "zkteco_enroll_data", "EBKN": "ebkn_enroll_data"}
 
 
 # ---------------------------------------------------------------------------
-# Employee hooks
+# Employee hook
 # ---------------------------------------------------------------------------
-
-def on_employee_create(doc, method=None) -> None:
-    """Frappe doc_events after_insert hook — fires when a new Employee is saved."""
-    settings = frappe.get_cached_doc("Attendance Integration Settings")
-    if not settings.sync_employee_to_devices_on_create:
-        return
-    sync_employee_to_devices(doc)
-
 
 def on_employee_update(doc, method=None) -> None:
     """Frappe doc_events on_update hook — called on every Employee save."""
     before = doc.get_doc_before_save()
     if not before:
+        # New employee — handle device user creation if checkbox set
+        if doc.get("create_user_in_device") and doc.get("biometric_device"):
+            _handle_device_user_creation(doc)
         return
 
-    # Always handle status/name changes regardless of sync setting
+    # --- Status / name changes (always active, no toggle) ---
     user_doc = _find_device_user(doc.name)
     if user_doc:
         status_before = before.status or "Active"
@@ -55,20 +51,26 @@ def on_employee_update(doc, method=None) -> None:
 
         if status_before != status_after:
             if status_after in _INACTIVE_STATUSES:
-                _delete_from_all_devices(user_doc, doc)
+                _delete_from_all_devices(user_doc)
             elif status_after == "Active" and status_before in _INACTIVE_STATUSES:
-                _re_enroll_on_all_devices(user_doc, doc)
+                _re_enroll_on_all_devices(user_doc)
 
         if name_before != name_after and status_after not in _INACTIVE_STATUSES:
-            _update_user_info(user_doc, doc)
+            _update_user_info(user_doc)
 
-    # Trigger device sync when attendance_device_id is set or changes
-    settings = frappe.get_cached_doc("Attendance Integration Settings")
-    if settings.sync_employee_to_devices_on_create:
-        device_id_before = (before.get("attendance_device_id") or "").strip()
-        device_id_after = (doc.get("attendance_device_id") or "").strip()
-        if device_id_after and device_id_before != device_id_after:
-            sync_employee_to_devices(doc)
+    # --- Device user creation via checkbox ---
+    checkbox_before = before.get("create_user_in_device")
+    checkbox_after = doc.get("create_user_in_device")
+    device_id_before = (before.get("attendance_device_id") or "").strip()
+    device_id_after = (doc.get("attendance_device_id") or "").strip()
+
+    # Trigger when checkbox just turned on, OR device ID changed while checkbox is on
+    if checkbox_after and (
+        (not checkbox_before)
+        or (device_id_after and device_id_before != device_id_after)
+    ):
+        if doc.get("biometric_device") and device_id_after:
+            _handle_device_user_creation(doc)
 
 
 # ---------------------------------------------------------------------------
@@ -81,26 +83,41 @@ def on_employee_linked(user_doc) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Core sync: create/link Device User and push basic info to devices
+# Device user creation
 # ---------------------------------------------------------------------------
 
-def sync_employee_to_devices(employee_doc) -> bool:
-    """Create or link Attendance Device User for employee, queue Update User on ZKTeco devices.
+def _handle_device_user_creation(employee_doc) -> None:
+    """Create or link Attendance Device User and queue Update User on the selected device.
 
-    Returns True if any commands were queued.
+    - Finds existing Device User by attendance_device_id (user_id)
+    - Creates one if not found, links employee
+    - Adds the selected biometric_device to child table (if not already there)
+    - Queues Update User command on that device
     """
     device_id = (employee_doc.get("attendance_device_id") or "").strip()
-    if not device_id:
-        return False
+    target_device = employee_doc.get("biometric_device")
+    if not device_id or not target_device:
+        return
 
-    # Find or create Attendance Device User
+    brand = frappe.db.get_value("Attendance Device", target_device, "brand")
+    if not brand:
+        return
+
+    # Find or create the Device User record
     existing_name = frappe.db.get_value("Attendance Device User", {"user_id": device_id})
     if existing_name:
         user_doc = frappe.get_doc("Attendance Device User", existing_name)
-        # Link employee if not yet linked
+        changed = False
         if not user_doc.employee:
             user_doc.employee = employee_doc.name
             user_doc.employee_name = employee_doc.employee_name
+            changed = True
+        # Add device to child table if not already there
+        existing_devices = {row.attendance_device for row in user_doc.get("devices", [])}
+        if target_device not in existing_devices:
+            user_doc.append("devices", {"attendance_device": target_device, "brand": brand})
+            changed = True
+        if changed:
             user_doc.save(ignore_permissions=True)
     else:
         user_doc = frappe.get_doc({
@@ -108,26 +125,12 @@ def sync_employee_to_devices(employee_doc) -> bool:
             "user_id": device_id,
             "employee": employee_doc.name,
             "employee_name": employee_doc.employee_name,
+            "devices": [{"attendance_device": target_device, "brand": brand}],
         })
         user_doc.insert(ignore_permissions=True)
 
-    # Queue Update User on all active devices (company-filtered if needed).
-    # We bypass user_doc.devices here because a freshly created Device User has
-    # an empty device list — query devices directly instead.
-    # ZKTeco: DATA UPDATE USERINFO (name + PIN, no biometrics needed)
-    # EBKN: SET_USER_PROFILE (name + privilege, no biometrics needed)
-    company = _employee_company(employee_doc)
-    filters = {"disabled": 0}
-    if company:
-        filters["company"] = company
-    devices = frappe.get_all("Attendance Device", filters=filters, fields=["name", "brand"])
-    queued = 0
-    for d in devices:
-        add_command(d.name, user_doc.name, d.brand, "Update User")
-        queued += 1
-    if queued:
-        frappe.db.commit()
-    return queued > 0
+    add_command(target_device, user_doc.name, brand, "Update User")
+    frappe.db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -141,57 +144,34 @@ def _find_device_user(employee_name: str) -> Optional[object]:
     return frappe.get_doc("Attendance Device User", doc_name)
 
 
-def _employee_company(employee_doc) -> Optional[str]:
-    """Return employee's company if devices_are_company_specific is on, else None."""
-    settings = frappe.get_cached_doc("Attendance Integration Settings")
-    if settings.devices_are_company_specific:
-        return employee_doc.get("company")
-    return None
-
-
-def _get_user_devices(user_doc, company: Optional[str] = None) -> dict:
-    """Return {device_id: brand} for all active devices this user should be on.
-
-    If company is given, only devices belonging to that company are included.
-    """
+def _get_user_devices(user_doc) -> dict:
+    """Return {device_id: brand} for all active devices this user should be on."""
     if user_doc.allow_in_all_devices:
-        filters = {"disabled": 0}
-        if company:
-            filters["company"] = company
-        devices = frappe.get_all("Attendance Device", filters=filters, fields=["name", "brand"])
+        devices = frappe.get_all("Attendance Device", filters={"disabled": 0}, fields=["name", "brand"])
         return {d.name: d.brand for d in devices}
-
-    result = {}
-    for row in user_doc.get("devices", []):
-        if not row.attendance_device:
-            continue
-        if company:
-            dev_company = frappe.db.get_value("Attendance Device", row.attendance_device, "company")
-            if dev_company != company:
-                continue
-        result[row.attendance_device] = row.brand
-    return result
+    return {
+        row.attendance_device: row.brand
+        for row in user_doc.get("devices", [])
+        if row.attendance_device
+    }
 
 
-def _delete_from_all_devices(user_doc, employee_doc=None) -> None:
-    company = _employee_company(employee_doc) if employee_doc else None
-    for device_id, brand in _get_user_devices(user_doc, company=company).items():
+def _delete_from_all_devices(user_doc) -> None:
+    for device_id, brand in _get_user_devices(user_doc).items():
         add_command(device_id, user_doc.name, brand, "Delete User")
     frappe.db.commit()
 
 
-def _re_enroll_on_all_devices(user_doc, employee_doc=None) -> None:
-    company = _employee_company(employee_doc) if employee_doc else None
-    for device_id, brand in _get_user_devices(user_doc, company=company).items():
+def _re_enroll_on_all_devices(user_doc) -> None:
+    for device_id, brand in _get_user_devices(user_doc).items():
         blob_field = _BRAND_BLOB_FIELD.get(brand, "")
         if blob_field and user_doc.get(blob_field):
             add_command(device_id, user_doc.name, brand, "Enroll User")
     frappe.db.commit()
 
 
-def _update_user_info(user_doc, employee_doc=None) -> None:
+def _update_user_info(user_doc) -> None:
     """Queue Update User on all devices (ZKTeco: USERINFO, EBKN: SET_USER_PROFILE)."""
-    company = _employee_company(employee_doc) if employee_doc else None
-    for device_id, brand in _get_user_devices(user_doc, company=company).items():
+    for device_id, brand in _get_user_devices(user_doc).items():
         add_command(device_id, user_doc.name, brand, "Update User")
     frappe.db.commit()

@@ -6,10 +6,8 @@
  "field_order": [
   "section_employee",
   "do_not_skip_unknown_employee_checkin",
-  "devices_are_company_specific",
   "column_break_ziga",
   "push_timezone_to_device",
-  "sync_employee_to_devices_on_create",
   "section_commands",
   "maximum_command_attempts",
   "force_close_after_days",
@@ -44,25 +42,11 @@
    "label": "Create Check-in for Unknown Employees"
   },
   {
-   "default": "0",
-   "description": "When enabled, each Attendance Device must have a Company set. Employee sync will only target devices belonging to the employee's company.",
-   "fieldname": "devices_are_company_specific",
-   "fieldtype": "Check",
-   "label": "Devices are Company-Specific"
-  },
-  {
    "default": "1",
    "description": "When enabled, the server sends its configured timezone to the device on every handshake so the device clock stays in sync automatically. Disable if you prefer to set the timezone directly on the device hardware.",
    "fieldname": "push_timezone_to_device",
    "fieldtype": "Check",
    "label": "Push Timezone to Device"
-  },
-  {
-   "default": "0",
-   "description": "When a new Employee is created or their Attendance Device ID is set, automatically create or link their Attendance Device User and push basic info (name, PIN) to devices.",
-   "fieldname": "sync_employee_to_devices_on_create",
-   "fieldtype": "Check",
-   "label": "Sync New Employees to Devices"
   },
   {
    "fieldname": "section_commands",

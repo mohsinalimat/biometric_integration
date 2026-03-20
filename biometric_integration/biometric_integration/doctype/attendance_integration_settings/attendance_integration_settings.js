@@ -5,11 +5,6 @@ frappe.ui.form.on("Attendance Integration Settings", {
 	refresh(frm) {
 		_load_endpoint_urls(frm);
 		_check_proxy_compatibility(frm);
-		_toggle_sync_button(frm);
-	},
-
-	sync_employee_to_devices_on_create(frm) {
-		_toggle_sync_button(frm);
 	},
 
 	proxy_enabled(frm) {
@@ -97,33 +92,3 @@ function _load_generated_config(frm) {
 	});
 }
 
-function _toggle_sync_button(frm) {
-	// Remove any existing button first to avoid duplicates on re-render
-	frm.page.remove_inner_button(__('Sync All Employees'), __('Employee Sync'));
-
-	if (!frm.doc.sync_employee_to_devices_on_create) return;
-
-	frm.add_custom_button(__('Sync All Employees'), () => {
-		frappe.confirm(
-			__('Sync all active employees with an Attendance Device ID to their biometric devices?<br><br>This will create missing Device User records and queue Update User commands.'),
-			() => {
-				frappe.call({
-					method: 'biometric_integration.api.bulk_sync_employees',
-					args: {
-						employees: [] // empty = all employees with attendance_device_id
-					},
-					freeze: true,
-					freeze_message: __('Syncing all employees…'),
-					callback(r) {
-						if (r.message) {
-							frappe.show_alert({
-								message: __('Queued sync for {0} employees', [r.message.queued]),
-								indicator: 'green',
-							}, 5);
-						}
-					},
-				});
-			}
-		);
-	}, __('Employee Sync'));
-}

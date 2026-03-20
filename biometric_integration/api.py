@@ -155,40 +155,7 @@ def get_device_form_settings() -> dict:
     settings = frappe.get_cached_doc("Attendance Integration Settings")
     return {
         "push_timezone_to_device": cint(settings.push_timezone_to_device),
-        "devices_are_company_specific": cint(settings.devices_are_company_specific),
-        "sync_employee_to_devices_on_create": cint(settings.sync_employee_to_devices_on_create),
     }
-
-
-@frappe.whitelist()
-def bulk_sync_employees(employees: list) -> dict:
-    """Queue Update User commands for a list of employees (manual bulk sync).
-
-    Called from the Employee list action and the Settings page button.
-    Creates Attendance Device User records for employees with attendance_device_id
-    that don't have one yet, then queues Update User on applicable devices.
-    """
-    frappe.only_for("System Manager")
-    if isinstance(employees, str):
-        import json
-        employees = json.loads(employees)
-
-    from biometric_integration.services.user_sync import sync_employee_to_devices
-
-    if not employees:
-        # Empty list = all active employees with attendance_device_id set
-        employees = frappe.get_all(
-            "Employee",
-            filters={"status": "Active", "attendance_device_id": ["!=", ""]},
-            pluck="name",
-        )
-
-    queued = 0
-    for emp_name in employees:
-        emp = frappe.get_doc("Employee", emp_name)
-        if sync_employee_to_devices(emp):
-            queued += 1
-    return {"queued": queued, "total": len(employees)}
 
 
 @frappe.whitelist()
