@@ -35,7 +35,7 @@
         "label": "Create User in Attendance Device",
         "fieldtype": "Check",
         "default": "0",
-        "insert_after": "old_parent",
+        "insert_after": "attendance_device_id",
         "module": "Biometric Integration",
         "owner": "Administrator",
         "modified_by": "Administrator"
