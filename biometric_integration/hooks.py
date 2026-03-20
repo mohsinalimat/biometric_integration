@@ -57,7 +57,6 @@ fixtures = [
         "filters": [["name", "in", [
             "Employee Checkin-device_id-fieldtype",
             "Employee Checkin-device_id-options",
-            "Employee-attendance_device_id-fieldtype",
             "Employee-attendance_device_id-mandatory_depends_on",
         ]]],
     },
