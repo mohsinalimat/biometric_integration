@@ -36,7 +36,7 @@ def validate_employee(doc, method=None) -> None:
     """Frappe doc_events validate hook — runs before save."""
     if not doc.get("create_user_in_device"):
         return
-    device_id = (doc.get("attendance_device_id") or "").strip()
+    device_id = str(doc.get("attendance_device_id") or "").strip()
     if device_id and not device_id.isdigit():
         frappe.throw(
             frappe._("Attendance Device ID must be a numeric value. "
@@ -74,8 +74,8 @@ def on_employee_update(doc, method=None) -> None:
     # --- Device user creation via checkbox ---
     checkbox_before = before.get("create_user_in_device")
     checkbox_after = doc.get("create_user_in_device")
-    device_id_before = (before.get("attendance_device_id") or "").strip()
-    device_id_after = (doc.get("attendance_device_id") or "").strip()
+    device_id_before = str(before.get("attendance_device_id") or "").strip()
+    device_id_after = str(doc.get("attendance_device_id") or "").strip()
 
     # Trigger when checkbox just turned on, OR device ID changed while checkbox is on
     if checkbox_after and (
@@ -107,7 +107,7 @@ def _handle_device_user_creation(employee_doc) -> None:
     - Adds the selected biometric_device to child table (if not already there)
     - Queues Update User command on that device
     """
-    device_id = (employee_doc.get("attendance_device_id") or "").strip()
+    device_id = str(employee_doc.get("attendance_device_id") or "").strip()
     target_device = employee_doc.get("biometric_device")
     if not device_id or not target_device:
         return
