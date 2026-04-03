@@ -119,6 +119,7 @@ bench --site your-site.com migrate
 Navigate to **Biometric Integration → Attendance Integration Settings**.
 
 The **Device Endpoint URLs** section shows exactly what to enter on the physical device. When the HTTP listener is active, plain-HTTP addresses (including the server's public IP) appear automatically.
+<img width="927" height="858" alt="image" src="https://github.com/user-attachments/assets/024b2096-f48e-4e6a-8cab-d85c4a28f5fe" />
 
 ### 2. Register each device
 
@@ -130,13 +131,15 @@ Go to **Biometric Integration → Attendance Device** → New:
 | **Device Name** | Friendly label |
 | **Brand** | ZKTeco or EBKN |
 
+<img width="927" height="859" alt="image" src="https://github.com/user-attachments/assets/b7159bd2-76ad-4638-a6c4-429cde79b1e8" />
+
 ### 3. Configure the physical device
 
 | Brand | Where to configure | What to enter |
 |-------|--------------------|---------------|
 | ZKTeco | ADMS / Cloud Server settings | Hostname only (e.g. `yoursite.com`) — firmware appends `/iclock/*` automatically |
 | EBKN | Push server URL | Full URL with path (e.g. `https://yoursite.com/ebkn`) |
-
+<img width="972" height="376" alt="image" src="https://github.com/user-attachments/assets/68024b92-8bbc-44dd-8b20-2396520760b7" />
 Once the device connects, `Last Contact` updates on the device record and the device is ready.
 
 ### 4. Map employees
