@@ -45,7 +45,7 @@ from biometric_integration.biometric_integration.doctype.attendance_device_user.
 )
 from biometric_integration.biometric_integration.doctype.attendance_device_log.attendance_device_log import maybe_log
 from biometric_integration.biometric_integration.doctype.attendance_integration_settings.attendance_integration_settings import get_erp_employee_id
-from biometric_integration.utils.device_cache import is_registered_device
+from biometric_integration.utils.device_cache import is_registered_device, touch_device
 
 Reply = Tuple[bytes, int, Dict[str, str]]
 
@@ -170,6 +170,7 @@ def _handle_receive_cmd(payload: dict, ctx: dict) -> Reply:
     dev_id = ctx["dev_id"]
     trans_id = ctx["trans_id"]
     try:
+        touch_device(dev_id)
         _store_ebkn_capabilities(dev_id, payload)
         cmd = process_device_command(dev_id)
         if not cmd:
