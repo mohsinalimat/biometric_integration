@@ -142,8 +142,18 @@ def _handle_realtime_glog(payload: dict, ctx: dict) -> Reply:
             return _fail_bytes(), 200, {"response_code": "ERROR"}
 
         user_id = str(payload.get("user_id", "")).lstrip("0") or str(payload.get("user_id", ""))
-        # EBKN sends io_time in UTC; convert to site timezone for storage
-        ts = _utc_to_site_local(datetime.strptime(payload["io_time"], "%Y-%m-%d %H:%M:%S"))
+        # EBKN sends io_time in UTC; some firmware uses "YYYY-MM-DD HH:MM:SS",
+        # others use compact "YYYYMMDDHHmmss". Handle both.
+        raw_time = str(payload["io_time"]).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d%H%M%S"):
+            try:
+                parsed_time = datetime.strptime(raw_time, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            raise ValueError(f"Unrecognised io_time format: {raw_time!r}")
+        ts = _utc_to_site_local(parsed_time)
         log_type = "IN" if payload.get("io_mode") == 1 else "OUT"
 
         # EBKN may send verify_type: 1=FP, 4=Face, 15=Card, etc.
