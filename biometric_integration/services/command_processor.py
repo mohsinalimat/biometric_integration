@@ -51,7 +51,7 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         cmd_doc.save(ignore_permissions=True)
         frappe.db.commit()
         if brand == "EBKN":
-            return {"trans_id": cmd_doc.name, "cmd_code": "OPEN_DOOR", "body": ""}
+            return {"trans_id": cmd_doc.name, "cmd_code": "OPEN_DOOR", "body": json.dumps({"door_no": 1})}
         return f"C:{cmd_doc.name}:CONTROL DEVICE 1"  # ZKTeco: door relay open
 
     if cmd_doc.command_type == "Sync User List":
