@@ -65,7 +65,7 @@ def check_proxy_compatibility() -> dict:
             result["sudo_reload_available"] = False
 
     # Determine recommendation
-    if result["nginx_installed"] and result["conf_dir_found"]:
+    if result["nginx_installed"] and result["conf_dir_found"] and result["sudo_reload_available"]:
         result["compatible"] = True
         result["recommendation"] = "ui_configure"
     else:
