@@ -104,6 +104,45 @@ frappe.ui.form.on('Attendance Device', {
 			});
 		}, __('Commands'));
 
+		if (frm.doc.brand === 'EBKN') {
+			frm.add_custom_button(__('Set Device Time'), () => {
+				const d = new frappe.ui.Dialog({
+					title: __('Set Device Time — {0}', [frm.doc.device_name || frm.doc.name]),
+					fields: [{ fieldname: 'status_html', fieldtype: 'HTML' }],
+				});
+				d.get_field('status_html').$wrapper.html(
+					`<div class="text-center py-3">
+						<div class="spinner-border text-primary mb-2" role="status" style="width:2rem;height:2rem;"></div>
+						<div class="text-muted">${__('Queueing time sync…')}</div>
+					</div>`
+				);
+				d.show();
+				frappe.call({
+					method: 'biometric_integration.api.create_device_command',
+					args: { device_id: frm.doc.name, command_type: 'Set Device Time' },
+					callback(r) {
+						if (!r.message) {
+							d.get_field('status_html').$wrapper.html(
+								`<div class="text-center py-3 text-danger"><b>${__('Failed to queue command')}</b></div>`
+							);
+							return;
+						}
+						const tz = frm.doc.device_timezone
+							|| (frappe.sys_defaults && frappe.sys_defaults.time_zone)
+							|| __('site timezone');
+						d.get_field('status_html').$wrapper.html(
+							`<div class="text-center py-3">
+								<div class="text-success mb-1" style="font-size:2.5rem;">&#10003;</div>
+								<b>${__('Set Device Time command queued')}</b>
+								<div class="text-muted small mt-2">${__('The device clock will be set to {0} on its next handshake.', [tz])}</div>
+							</div>`
+						);
+						setTimeout(() => d.hide(), 3000);
+					},
+				});
+			}, __('Commands'));
+		}
+
 		frm.add_custom_button(__('Unlock Door'), () => {
 			const d = new frappe.ui.Dialog({
 				title: __('Unlock Door \u2014 {0}', [frm.doc.device_name || frm.doc.name]),
@@ -186,17 +225,21 @@ function _init_timezone_field(frm) {
 }
 
 /**
- * Set device_timezone read-only state + description based on:
- *   - Brand (EBKN = always read-only, always UTC)
- *   - Attendance Integration Settings.push_timezone_to_device
- *     ON  -> editable, default = site timezone
- *     OFF -> read-only (shows whatever value the device last reported)
+ * Set device_timezone read-only state + description based on brand and settings.
+ *
+ * EBKN: always editable. The value is the timezone the device's on-screen clock
+ *   is set to — used to interpret incoming io_time, and to build the wall-clock
+ *   string for the "Set Device Time" command. Leave blank to assume site TZ.
+ *
+ * ZKTeco: behaviour depends on Attendance Integration Settings.push_timezone_to_device.
+ *   ON  -> editable, default = site timezone (pushed via TimeZone= on handshake).
+ *   OFF -> read-only.
  */
 function _apply_tz_field_state(frm) {
 	if (frm.doc.brand === 'EBKN') {
-		frm.set_df_property('device_timezone', 'read_only', 1);
+		frm.set_df_property('device_timezone', 'read_only', 0);
 		frm.set_df_property('device_timezone', 'description',
-			__('EBKN devices always send timestamps in UTC. This field is read-only and informational.'));
+			__("Timezone the device's clock is set to. Used to interpret attendance timestamps and to build the wall-clock value sent by the 'Set Device Time' command. Leave blank to assume the site timezone."));
 		return;
 	}
 

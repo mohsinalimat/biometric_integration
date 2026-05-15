@@ -142,8 +142,8 @@ def _handle_realtime_glog(payload: dict, ctx: dict) -> Reply:
             return _fail_bytes(), 200, {"response_code": "ERROR"}
 
         user_id = str(payload.get("user_id", "")).lstrip("0") or str(payload.get("user_id", ""))
-        # EBKN sends io_time in UTC; some firmware uses "YYYY-MM-DD HH:MM:SS",
-        # others use compact "YYYYMMDDHHmmss". Handle both.
+        # EBKN io_time has no timezone marker — it's the device's wall-clock.
+        # Some firmware uses "YYYY-MM-DD HH:MM:SS", others compact "YYYYMMDDHHmmss".
         raw_time = str(payload["io_time"]).strip()
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d%H%M%S"):
             try:
@@ -153,7 +153,7 @@ def _handle_realtime_glog(payload: dict, ctx: dict) -> Reply:
                 continue
         else:
             raise ValueError(f"Unrecognised io_time format: {raw_time!r}")
-        ts = _utc_to_site_local(parsed_time)
+        ts = _localize_device_timestamp(parsed_time, dev_id)
         log_type = "IN" if payload.get("io_mode") == 1 else "OUT"
 
         # EBKN may send verify_type: 1=FP, 4=Face, 15=Card, etc.
@@ -493,22 +493,31 @@ def _process_ebkn_user_id_list(dev_id: str, payload: dict) -> None:
     maybe_log(dev_id, "Sync", "IN", f"Sync User List: {count} users processed from dev_id={dev_id}")
 
 
-def _utc_to_site_local(naive_utc: datetime) -> datetime:
-    """Convert a naive UTC datetime to a naive site-timezone datetime.
+def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
+    """Convert a naive EBKN io_time to a naive site-local datetime.
 
-    EBKN devices always send timestamps in UTC.  Frappe stores Employee Checkin
-    times as naive datetimes in the site timezone.  This converts UTC → site local
-    and strips the tzinfo so Frappe handles it correctly.
+    EBKN io_time carries no timezone marker — it's the device's wall-clock value.
+    We interpret it using Attendance Device.device_timezone if set; otherwise
+    treat it as already in the site timezone (no conversion).
+
+    Frappe stores Employee Checkin times as naive datetimes in the site timezone,
+    so we strip tzinfo before returning.
     """
+    device_tz_name: str | None = None
+    if sn:
+        device_tz_name = frappe.db.get_value("Attendance Device", sn, "device_timezone") or None
+
+    if not device_tz_name:
+        return naive_ts  # treat as site-local — no conversion
+
     try:
         from zoneinfo import ZoneInfo
-        from datetime import timezone as _tz
         site_tz_name = frappe.utils.get_system_timezone()
-        utc_aware = naive_utc.replace(tzinfo=_tz.utc)
-        site_aware = utc_aware.astimezone(ZoneInfo(site_tz_name))
+        device_aware = naive_ts.replace(tzinfo=ZoneInfo(device_tz_name))
+        site_aware = device_aware.astimezone(ZoneInfo(site_tz_name))
         return site_aware.replace(tzinfo=None)
     except Exception:
-        return naive_utc  # fall back to as-is if zoneinfo unavailable
+        return naive_ts
 
 
 def _store_ebkn_capabilities(dev_id: str, payload: dict) -> None:
