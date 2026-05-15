@@ -64,6 +64,30 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         # ZKTeco: device will POST results to /iclock/querydata
         return f"C:{cmd_doc.name}:DATA QUERY tablename=user,fielddesc=*,filter=*"
 
+    if cmd_doc.command_type == "Set Device Time":
+        brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
+        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
+        cmd_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        if brand == "EBKN":
+            time_str = _ebkn_now_for_device(device_sn)
+            return {
+                "trans_id": cmd_doc.name,
+                "cmd_code": "SET_TIME",
+                "body": json.dumps({"time": time_str}),
+            }
+        # ZKTeco devices sync clock via /iclock/rtdata?type=time on their own
+        # cadence — there is no out-of-band SET_TIME equivalent. Mark Success
+        # so the user gets feedback instead of a stuck Pending command.
+        cmd_doc.status = "Success"
+        cmd_doc.closed_on = now_datetime()
+        cmd_doc.device_response = (
+            "ZKTeco devices auto-sync via /iclock/rtdata; no command sent."
+        )
+        cmd_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return None
+
     try:
         payload = _build_payload(cmd_doc)
         if payload:
@@ -211,6 +235,25 @@ def _ebkn(cmd_doc: Any, user_doc: Any) -> Optional[dict]:
         return {"trans_id": cmd_doc.name, "cmd_code": "SET_USER_INFO", "body": blob}
 
     return None
+
+
+def _ebkn_now_for_device(device_sn: str) -> str:
+    """Return current time as EBKN's YYYYMMDDhhmmss in the device's configured zone.
+
+    Uses Attendance Device.device_timezone if set, else the site timezone. The
+    string is a plain wall-clock value — EBKN's SET_TIME has no UTC marker.
+    """
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = (
+            frappe.db.get_value("Attendance Device", device_sn, "device_timezone")
+            or frappe.utils.get_system_timezone()
+        )
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now_local = datetime.now()
+    return now_local.strftime("%Y%m%d%H%M%S")
 
 
 def _load_blob(url: str) -> Optional[bytes]:
