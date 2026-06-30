@@ -5,6 +5,8 @@ from __future__ import annotations
 from frappe.model.document import Document
 import frappe
 
+from biometric_integration.utils.device_cache import invalidate_device_cache
+
 
 _BRAND_BLOB_FIELD = {
     "EBKN": "ebkn_enroll_data",
@@ -14,6 +16,8 @@ _BRAND_BLOB_FIELD = {
 
 class AttendanceDevice(Document):
     def after_insert(self):
+        # Clear any cached "unregistered" verdict so the device is accepted on its next poll.
+        invalidate_device_cache(self.name)
         _enqueue_initial_enrollments(self)
 
     def on_update(self):
@@ -22,7 +26,8 @@ class AttendanceDevice(Document):
             _enqueue_initial_enrollments(self)
 
     def on_trash(self):
-        pass
+        # Drop cached registration / sync state for the deleted serial.
+        invalidate_device_cache(self.name)
 
 
 def _enqueue_initial_enrollments(device: "AttendanceDevice") -> None:

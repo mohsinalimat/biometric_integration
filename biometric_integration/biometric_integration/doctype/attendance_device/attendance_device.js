@@ -170,6 +170,39 @@ frappe.ui.form.on('Attendance Device', {
 			});
 		}, __('Commands'));
 
+		if (frm.doc.brand === 'ZKTeco') {
+			frm.add_custom_button(__('Re-pull Attendance'), () => {
+				const d = new frappe.ui.Dialog({
+					title: __('Re-pull Attendance — {0}', [frm.doc.device_name || frm.doc.name]),
+					fields: [
+						{ fieldname: 'start_time', fieldtype: 'Datetime', label: __('From'), reqd: 1 },
+						{ fieldname: 'end_time', fieldtype: 'Datetime', label: __('To (blank = now)') },
+						{ fieldname: 'note', fieldtype: 'HTML',
+						  options: `<div class="text-muted small mt-2">${__('The device re-uploads its stored punches for this range on its next poll. Existing check-ins are skipped automatically, so this is safe to run more than once.')}</div>` },
+					],
+					primary_action_label: __('Send'),
+					primary_action(values) {
+						frappe.call({
+							method: 'biometric_integration.api.create_repull_command',
+							args: { device_id: frm.doc.name, start_time: values.start_time, end_time: values.end_time || null },
+							freeze: true,
+							freeze_message: __('Queuing re-pull command…'),
+							callback(r) {
+								if (r.message) {
+									frappe.show_alert({
+										message: __('Re-pull command queued ({0}). Watch Device Logs / Employee Checkins as records arrive.', [r.message]),
+										indicator: 'green',
+									}, 7);
+									d.hide();
+								}
+							},
+						});
+					},
+				});
+				d.show();
+			}, __('Commands'));
+		}
+
 		frm.add_custom_button(__('View Device Logs'), () => {
 			frappe.set_route('List', 'Attendance Device Log', {
 				attendance_device: frm.doc.name,

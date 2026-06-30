@@ -150,6 +150,30 @@ def create_device_command(device_id: str, command_type: str) -> str:
 
 
 @frappe.whitelist()
+def create_repull_command(device_id: str, start_time: str, end_time: str | None = None) -> str:
+    """Queue a ZKTeco 'Re-pull Attendance' command for a date range.
+
+    The device re-uploads its stored attendance logs for [start_time, end_time];
+    they flow through the normal checkin pipeline (duplicates are ignored).
+    """
+    brand = frappe.db.get_value("Attendance Device", device_id, "brand")
+    if not brand:
+        frappe.throw(f"Device not found: {device_id}")
+    if brand != "ZKTeco":
+        frappe.throw(frappe._("Re-pull Attendance is only supported for ZKTeco devices."))
+    cmd = frappe.new_doc("Attendance Device Command")
+    cmd.attendance_device = device_id
+    cmd.brand = brand
+    cmd.command_type = "Re-pull Attendance"
+    cmd.repull_start = start_time
+    cmd.repull_end = end_time
+    cmd.status = "Pending"
+    cmd.insert(ignore_permissions=True)
+    frappe.db.commit()
+    return cmd.name
+
+
+@frappe.whitelist()
 def get_device_form_settings() -> dict:
     """Return Attendance Integration Settings values needed by device/settings forms."""
     settings = frappe.get_cached_doc("Attendance Integration Settings")

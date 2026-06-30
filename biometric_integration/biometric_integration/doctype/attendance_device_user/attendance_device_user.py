@@ -10,6 +10,7 @@ import frappe
 from frappe.model.document import Document
 
 from biometric_integration.biometric_integration.doctype.attendance_device_command.attendance_device_command import add_command
+from biometric_integration.utils.device_cache import invalidate_user_sync_cache
 
 
 _BRAND_BLOB_FIELD: Dict[str, str] = {
@@ -239,11 +240,15 @@ def _sync_on_device_list_change(
 
     for device_id in set(after) - set(before):
         brand = after[device_id]
+        # Device link added — drop the "already synced" short-circuit cache entry.
+        invalidate_user_sync_cache(doc.user_id, device_id)
         if doc.get(_BRAND_BLOB_FIELD.get(brand, "")):
             add_command(device_id, doc.name, brand, "Enroll User")
 
     for device_id in set(before) - set(after):
         brand = before[device_id]
+        # Device link removed — drop the stale "already synced" cache entry.
+        invalidate_user_sync_cache(doc.user_id, device_id)
         add_command(device_id, doc.name, brand, "Delete User")
 
 

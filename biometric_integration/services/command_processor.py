@@ -13,7 +13,7 @@ import json
 from typing import Any, Dict, Optional, Union
 
 import frappe
-from frappe.utils import cint, now, now_datetime
+from frappe.utils import cint, now, now_datetime, get_datetime
 
 
 def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
@@ -87,6 +87,36 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         cmd_doc.save(ignore_permissions=True)
         frappe.db.commit()
         return None
+
+    if cmd_doc.command_type == "Re-pull Attendance":
+        # Ask the device to re-upload stored attendance logs for a date range.
+        # ZKTeco answers a `DATA QUERY ATTLOG` by POSTing the records to
+        # /iclock/cdata?table=ATTLOG, which the normal _process_attlog path ingests
+        # (duplicates are rejected by Employee Checkin, so re-pulls are safe).
+        # Marked done-on-send so it is emitted exactly once (not re-queried every poll).
+        brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
+        if brand != "ZKTeco":
+            cmd_doc.status = "Failed"
+            cmd_doc.closed_on = now_datetime()
+            cmd_doc.device_response = "Re-pull Attendance is only supported for ZKTeco devices."
+            cmd_doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            return None
+        start_s = (
+            get_datetime(cmd_doc.repull_start).strftime("%Y-%m-%d %H:%M:%S")
+            if cmd_doc.repull_start else "2000-01-01 00:00:00"
+        )
+        end_s = (
+            get_datetime(cmd_doc.repull_end).strftime("%Y-%m-%d %H:%M:%S")
+            if cmd_doc.repull_end else now_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
+        cmd_doc.status = "Success"
+        cmd_doc.closed_on = now_datetime()
+        cmd_doc.device_response = f"Sent: DATA QUERY ATTLOG StartTime={start_s} EndTime={end_s}"
+        cmd_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return f"C:{cmd_doc.name}:DATA QUERY ATTLOG StartTime={start_s}\tEndTime={end_s}"
 
     try:
         payload = _build_payload(cmd_doc)

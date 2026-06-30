@@ -44,8 +44,7 @@ from biometric_integration.biometric_integration.doctype.attendance_device_user.
     save_enrollment_data,
 )
 from biometric_integration.biometric_integration.doctype.attendance_device_log.attendance_device_log import maybe_log
-from biometric_integration.biometric_integration.doctype.attendance_integration_settings.attendance_integration_settings import get_erp_employee_id
-from biometric_integration.utils.device_cache import is_registered_device, touch_device
+from biometric_integration.utils.device_cache import is_registered_device, touch_device, get_employee_by_pin
 
 Reply = Tuple[bytes, int, Dict[str, str]]
 
@@ -280,7 +279,7 @@ def _handle_realtime_enroll(payload: dict, ctx: dict) -> Reply:
 
         # Link employee if not yet linked
         if not user_doc.employee:
-            emp = get_erp_employee_id(user_id)
+            emp = get_employee_by_pin(user_id)
             if emp:
                 user_doc.employee = emp
                 user_doc.save(ignore_permissions=True)

@@ -13,6 +13,8 @@
   "brand",
   "column_break_1",
   "command_type",
+  "repull_start",
+  "repull_end",
   "status",
   "initiated_on",
   "closed_on",
@@ -66,8 +68,20 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Command Type",
-   "options": "\nGet Enroll Data\nEnroll User\nDelete User\nUpdate User\nRestart Device\nSync User List\nUnlock Door\nSet Device Time",
+   "options": "\nGet Enroll Data\nEnroll User\nDelete User\nUpdate User\nRestart Device\nSync User List\nUnlock Door\nSet Device Time\nRe-pull Attendance",
    "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.command_type=='Re-pull Attendance'",
+   "fieldname": "repull_start",
+   "fieldtype": "Datetime",
+   "label": "Re-pull Start"
+  },
+  {
+   "depends_on": "eval:doc.command_type=='Re-pull Attendance'",
+   "fieldname": "repull_end",
+   "fieldtype": "Datetime",
+   "label": "Re-pull End"
   },
   {
    "bold": 1,

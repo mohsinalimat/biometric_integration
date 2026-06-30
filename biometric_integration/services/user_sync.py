@@ -23,6 +23,7 @@ import frappe
 from biometric_integration.biometric_integration.doctype.attendance_device_command.attendance_device_command import (
     add_command,
 )
+from biometric_integration.utils.device_cache import invalidate_employee_pin
 
 _INACTIVE_STATUSES = {"Left", "Inactive"}
 _BRAND_BLOB_FIELD = {"ZKTeco": "zkteco_enroll_data", "EBKN": "ebkn_enroll_data"}
@@ -48,6 +49,17 @@ def validate_employee(doc, method=None) -> None:
 def on_employee_update(doc, method=None) -> None:
     """Frappe doc_events on_update hook — called on every Employee save."""
     before = doc.get_doc_before_save()
+
+    # Keep the PIN→Employee cache honest when the device-ID mapping changes, so a
+    # freshly-mapped employee's punches are attributed immediately (the mapping is
+    # otherwise cached in Redis for up to 5 minutes).
+    pin_after = str(doc.get("attendance_device_id") or "").strip()
+    pin_before = str(before.get("attendance_device_id") or "").strip() if before else ""
+    if pin_after != pin_before:
+        for pin in (pin_before, pin_after):
+            if pin:
+                invalidate_employee_pin(pin)
+
     if not before:
         # New employee — handle device user creation if checkbox set
         if doc.get("create_user_in_device") and doc.get("biometric_device"):

@@ -110,7 +110,7 @@ def get_employee_by_pin(pin: str) -> str | None:
     """
     if not pin:
         return None
-    pin_str = pin.strip()
+    pin_str = str(pin).strip()
     key = f"biometric:pin_emp:{pin_str}"
     cached = frappe.cache.get_value(key)
     if cached is not None:

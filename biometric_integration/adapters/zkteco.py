@@ -44,6 +44,7 @@ from biometric_integration.utils.device_cache import (
     touch_device,
     get_last_sync_id,
     set_last_sync_id,
+    get_employee_by_pin,
 )
 
 
@@ -323,6 +324,13 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         cmd_id = args.get("cmdid")
         count_str = args.get("count", "0")
 
+        # Some firmware returns a `DATA QUERY ATTLOG` result here instead of via a
+        # plain /iclock/cdata?table=ATTLOG POST — route it through the same parser.
+        if table.lower() == "attlog":
+            sn = args.get("SN") or args.get("sn")
+            body_str = self.raw_body.decode("utf-8", errors="ignore")
+            return self._process_attlog(sn or "", body_str)
+
         if table != "user":
             return self.text(f"{table}={count_str}")
 
@@ -436,7 +444,7 @@ def _handle_operlog_user(sn: str, line: str) -> int:
 
     # Link employee if not yet linked
     if not user_doc.employee:
-        emp = get_erp_employee_id(pin)
+        emp = get_employee_by_pin(pin)
         if emp:
             user_doc.employee = emp
 
