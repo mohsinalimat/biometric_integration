@@ -41,7 +41,9 @@ def create_employee_checkin(
 
         checkin = frappe.new_doc("Employee Checkin")
         checkin.employee = employee_id
-        checkin.log_type = log_type
+        # log_type intentionally left empty: the device IN/OUT flag is unreliable,
+        # and attendance is computed as first-in/last-out span (see the
+        # Checkin -> Attendance server script), so we do not record it.
         checkin.time = timestamp
         checkin.device_id = device_id
         if biometric_method:
