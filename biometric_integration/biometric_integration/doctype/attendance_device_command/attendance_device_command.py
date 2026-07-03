@@ -57,8 +57,27 @@ class AttendanceDeviceCommand(Document):
             frappe.log_error(frappe.get_traceback(), "AttendanceDeviceCommand before_save failed")
 
 
+# User-provisioning commands are the ones gated by the device's
+# `disable_employee_sync` switch (device-control commands like Restart/Unlock/
+# Re-pull/Get Enroll Data are NOT gated — those are operator actions).
+_EMPLOYEE_SYNC_COMMANDS = {"Enroll User", "Delete User", "Update User"}
+
+
 def add_command(device_id: str, user_id: str, brand: str, command_type: str) -> None:
-    """Create an Attendance Device Command unless an equivalent pending one already exists."""
+    """Create an Attendance Device Command unless an equivalent pending one already exists.
+
+    Provisioning commands (Enroll/Delete/Update User) are suppressed for devices that
+    are disabled or have `disable_employee_sync` set, so that switch reliably blocks
+    all user push/pull to the device (not just the bulk enroll at registration time).
+    """
+    if command_type in _EMPLOYEE_SYNC_COMMANDS:
+        dev = frappe.db.get_value(
+            "Attendance Device", device_id,
+            ["disabled", "disable_employee_sync"], as_dict=True,
+        )
+        if dev and (dev.disabled or dev.disable_employee_sync):
+            return
+
     if frappe.db.exists(
         "Attendance Device Command",
         {

@@ -61,8 +61,11 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         frappe.db.commit()
         if brand == "EBKN":
             return {"trans_id": cmd_doc.name, "cmd_code": "GET_USER_ID_LIST", "body": ""}
-        # ZKTeco: device will POST results to /iclock/querydata
-        return f"C:{cmd_doc.name}:DATA QUERY tablename=user,fielddesc=*,filter=*"
+        # ZKTeco: classic all-users query (widest firmware support — the newer
+        # `DATA QUERY tablename=user,...` form is rejected Return=-1004 by classic
+        # firmware). The device uploads USER records, ingested by _handle_operlog_user
+        # (/iclock/cdata) or _handle_querydata (/iclock/querydata) depending on firmware.
+        return f"C:{cmd_doc.name}:DATA QUERY USERINFO"
 
     if cmd_doc.command_type == "Set Device Time":
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
