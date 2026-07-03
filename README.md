@@ -2,10 +2,11 @@
 
 # Biometric Integration for Frappe / ERPNext
 
-**Real-time biometric attendance — ZKTeco & EBKN — wired directly into ERPNext. No middleware. No polling. No separate service.**
+**Real-time biometric attendance — ZKTeco & EBKN — wired directly into ERPNext. No middleware. No polling service. No Nginx rewrite rules.**
 
 [![Frappe v15](https://img.shields.io/badge/Frappe-v15-blue?style=flat-square)](https://frappeframework.com)
 [![ERPNext v15](https://img.shields.io/badge/ERPNext-v15-brightgreen?style=flat-square)](https://erpnext.com)
+[![HRMS](https://img.shields.io/badge/HRMS-required-orange?style=flat-square)](https://github.com/frappe/hrms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 </div>
@@ -14,30 +15,44 @@
 
 ## Overview
 
-The **Biometric Integration** app connects ZKTeco and EBKN biometric attendance devices directly to your ERPNext instance. Punches create Employee Checkin records in real time. Enrollment is captured automatically. Employee status changes (left, inactive) propagate delete commands back to every assigned device — all without a single line of manual intervention after initial setup.
+**Biometric Integration** connects ZKTeco and EBKN biometric attendance devices directly to ERPNext. Punches become **Employee Checkin** records in real time, enrollment templates are captured and can be pushed to other devices, and employee lifecycle changes propagate to every assigned device — all through Frappe's request layer, with no separate service to run.
+
+It works unchanged on **Frappe Cloud** and self-hosted servers because device traffic is intercepted inside Frappe itself (see [How It Works](#how-it-works)).
 
 ---
 
 ## Device Support
 
-| Brand | Protocol | Attendance | Enrollment Sync | Commands | Status |
-|-------|----------|:----------:|:---------------:|:--------:|--------|
-| **ZKTeco** | ADMS Push (`iclock`) | ✅ | ✅ | ✅ | **Stable** |
-| **EBKN** | FkWeb Push | ✅ | ✅ | ✅ | **Stable** |
+| Brand | Protocol | Attendance | Enrollment | Commands | Status |
+|-------|----------|:----------:|:----------:|:--------:|--------|
+| **ZKTeco** | ADMS Push (`/iclock/*`) | ✅ | ✅ | ✅ | **Stable** |
+| **EBKN** | BS_FkWeb Push (`/ebkn`) | ✅ | ✅ | ✅ | **Stable** |
 | Suprema | — | — | — | — | Planned |
 
-> ZKTeco devices must support the **ADMS / Cloud Server** push mode. Most mid-range and enterprise ZKTeco models support this.
+> ZKTeco devices must support **ADMS / Cloud Server** push mode (most mid-range and enterprise models do).
+
+### A note on ZKTeco firmware dialects
+
+ZKTeco firmware comes in two protocol generations, and this app supports both:
+
+- **Classic dialect** (the widely-deployed default): fingerprint templates are pushed with `DATA UPDATE FINGERTMP` and the profile is read with `DATA QUERY USERINFO` / `FPTMP`. This is what the app uses for **fingerprints**, because it works across old *and* new firmware.
+- **Unified dialect** (newer firmware): the `biodata` / `templatev10` tables. Used only for **face / palm** modalities, which exist solely on newer devices.
+
+Practical consequences you may see in the Attendance Device Log:
+
+- On classic firmware, template **queries** (`DATA QUERY tablename=biodata,…`) return `Return=-1004` — the device doesn't implement them. That's expected: **fingerprint templates arrive by device push** (the device uploads them via `OPERLOG` when a finger is enrolled *on* the device), not by query.
+- Pushing a **unified** `DATA UPDATE biodata` line to classic firmware returns `Return=-1`; the app avoids this by using `FINGERTMP` for fingerprints.
 
 ---
 
 ## How It Works
 
-Device traffic is handled via Frappe's `page_renderer` hook. Requests to `/iclock/*` (ZKTeco) and `/ebkn` (EBKN) are intercepted at the WSGI layer before any template or page lookup — no Nginx rewrite rules, no `X-Original-Request-URI` header tricks, no separate listener process.
+Device traffic is handled via Frappe's `page_renderer` hook. Requests to `/iclock/*` (ZKTeco) and `/ebkn` (EBKN) are intercepted at the WSGI layer **before** any template or page lookup — no Nginx rewrites, no `X-Original-Request-URI` tricks, no separate listener process. This is why it runs on Frappe Cloud with zero infrastructure changes.
 
 ```
 ┌─────────────────────┐
 │   Biometric Device  │
-│  (ZKTeco / EBKN)    │
+│   (ZKTeco / EBKN)   │
 └────────┬────────────┘
          │  HTTP push (real-time)
          ▼
@@ -53,47 +68,10 @@ Device traffic is handled via Frappe's `page_renderer` hook. Requests to `/icloc
   (ERPNext HRMS)     Command Queue
 ```
 
-**Frappe Cloud / HTTPS-only servers:** Biometric devices speak plain HTTP. If your server is HTTPS-only, the app generates a ready-to-use Nginx server block you paste into a local proxy on your network — or on self-hosted servers it injects and activates the config automatically from the Settings UI.
+**Devices speak plain HTTP; your site is HTTPS.** Two ways to bridge that:
 
----
-
-## Features
-
-### Attendance
-- Punch data pushed by devices is immediately converted to **Employee Checkin** records in ERPNext
-- Supports both batch upload (`ATTLOG`) and real-time push (`rtlog` / `realtime_glog`)
-- Duplicate-safe: ERPNext's own deduplication logic applies
-
-### Enrollment & User Sync
-- When a user enrolls on any device, an **Attendance Device User** record is created automatically, capturing the PIN and biometric template
-- Templates are propagated to all other devices the user is assigned to — enroll once, sync everywhere
-- Matched to an ERPNext Employee automatically via the `attendance_device_id` field (standard ERPNext HRMS field)
-
-### Employee Lifecycle
-- **Employee goes Inactive / Left** → `Delete User` commands are queued for every assigned device
-- **Employee reactivated** → `Enroll User` commands re-push the stored template back to all devices
-- **Employee name changes** → `Update User` synced to ZKTeco devices
-
-### Command Queue
-Commands are delivered to devices the next time they poll (`/iclock/getrequest` or `receive_cmd`):
-
-| Command | Purpose |
-|---------|---------|
-| Enroll User | Push stored biometric template to device |
-| Delete User | Remove user from device |
-| Get Enroll Data | Fetch template from device (EBKN) |
-| Update User | Sync updated name/info to device (ZKTeco) |
-
-### Device Discovery
-Unknown devices that connect are **always logged** — even with device logging disabled — so you can find the serial number and register the device without hunting through server logs.
-
-### HTTP Listener
-- **Self-hosted:** Enable from the Settings UI. The app injects an Nginx server block and reloads Nginx automatically.
-- **Frappe Cloud / manual:** A ready-to-paste Nginx config block is generated in Settings. Drop it into a local Nginx on your network.
-- When the listener is active, the Settings page shows all available addresses: HTTPS URL, plain-HTTP URL, and detected public IP — ready to copy into device config.
-
-### Audit Log
-An optional **Attendance Device Log** captures all device communication — attendance events, commands, enrollment, handshakes, and errors — with raw data. Controlled by a single checkbox in Settings; disabled by default to avoid DB bloat. Auto-purges after 30 days.
+- **Self-hosted:** enable the HTTP listener from Settings — the app writes and reloads an Nginx server block for you.
+- **Frappe Cloud / manual:** Settings generates a ready-to-paste Nginx block; drop it into a small Nginx on your LAN that forwards to your HTTPS site.
 
 ---
 
@@ -102,13 +80,17 @@ An optional **Attendance Device Log** captures all device communication — atte
 ```bash
 cd /path/to/frappe-bench
 
-# Get the app (v2 branch)
-bench get-app https://github.com/KhaledBinAmir/biometric_integration --branch v2
+# HRMS is required (provides Employee / Employee Checkin)
+bench get-app hrms
+bench get-app https://github.com/KhaledBinAmir/biometric_integration --branch develop
 
-# Install on your site
 bench --site your-site.com install-app biometric_integration
 bench --site your-site.com migrate
 ```
+
+> **Branch note:** active development and all current fixes live on `develop`. See [Migrating from v1](#migrating-from-v1) if you are on the old `main`/v1 architecture.
+
+**Requirements:** Frappe **v15** / ERPNext **v15**, **HRMS**, Redis (used for EBKN multi-block buffering), Python ≥ 3.10. The HTTP listener additionally needs bench-managed Nginx (self-hosted only).
 
 ---
 
@@ -116,37 +98,99 @@ bench --site your-site.com migrate
 
 ### 1. Open Attendance Integration Settings
 
-Navigate to **Biometric Integration → Attendance Integration Settings**.
+**Biometric Integration → Attendance Integration Settings.** The **Device Endpoint URLs** section shows exactly what to enter on the device (plain-HTTP addresses and detected public IP appear when the listener is active).
 
-The **Device Endpoint URLs** section shows exactly what to enter on the physical device. When the HTTP listener is active, plain-HTTP addresses (including the server's public IP) appear automatically.
-<img width="927" height="858" alt="image" src="https://github.com/user-attachments/assets/024b2096-f48e-4e6a-8cab-d85c4a28f5fe" />
+<img width="927" height="858" alt="Settings" src="https://github.com/user-attachments/assets/024b2096-f48e-4e6a-8cab-d85c4a28f5fe" />
 
 ### 2. Register each device
 
-Go to **Biometric Integration → Attendance Device** → New:
+**Biometric Integration → Attendance Device → New.**
 
 | Field | Description |
 |-------|-------------|
-| **Serial** | Must match the Serial Number shown in the device's ADMS / network settings |
-| **Device Name** | Friendly label |
-| **Brand** | ZKTeco or EBKN |
+| **Serial** | Must match the serial / device ID reported by the device's ADMS settings — this is the only identity the device sends. |
+| **Device Name** | Friendly label. |
+| **Brand** | ZKTeco or EBKN. |
+| **Company / Project / Branch** | Optional assignment. |
+| **Device Timezone** | The device's wall-clock zone. Punch timestamps carry no timezone; set this so they convert correctly (leave blank to treat as site time). |
+| **Disable Employee Sync** | When checked, no Enroll/Delete/Update User commands are queued for this device (it still receives punches). |
 
-<img width="927" height="859" alt="image" src="https://github.com/user-attachments/assets/b7159bd2-76ad-4638-a6c4-429cde79b1e8" />
+Capability fields (**Firmware Version**, **MAC Address**, **Supported Biometrics**, **Max Users**, **FP Algorithm Version**) are populated automatically from what the device reports.
+
+<img width="927" height="859" alt="Attendance Device" src="https://github.com/user-attachments/assets/b7159bd2-76ad-4638-a6c4-429cde79b1e8" />
 
 ### 3. Configure the physical device
 
-| Brand | Where to configure | What to enter |
-|-------|--------------------|---------------|
-| ZKTeco | ADMS / Cloud Server settings | Hostname only (e.g. `yoursite.com`) — firmware appends `/iclock/*` automatically |
-| EBKN | Push server URL | Full URL with path (e.g. `https://yoursite.com/ebkn`) |
-<img width="972" height="376" alt="image" src="https://github.com/user-attachments/assets/68024b92-8bbc-44dd-8b20-2396520760b7" />
-Once the device connects, `Last Contact` updates on the device record and the device is ready.
+| Brand | Where | What to enter |
+|-------|-------|---------------|
+| ZKTeco | ADMS / Cloud Server settings | Hostname only (e.g. `yoursite.com`) — firmware appends `/iclock/*`. |
+| EBKN | Push server URL | Full URL with path (e.g. `https://yoursite.com/ebkn`). |
+
+<img width="972" height="376" alt="Device config" src="https://github.com/user-attachments/assets/68024b92-8bbc-44dd-8b20-2396520760b7" />
+
+Once the device connects, `Last Contact` updates and it's ready.
 
 ### 4. Map employees
 
-When a user enrolls on a device, an **Attendance Device User** record is created automatically. Open it and link it to the matching ERPNext Employee.
+When a PIN first appears, an **Attendance Device User** is created automatically. Link it to the matching ERPNext Employee — or, better, pre-fill each Employee's **Attendance Device ID** field with their device PIN and the app links them automatically on first contact.
 
-**Tip:** Pre-fill the **Attendance Device ID** field on each Employee record (in ERPNext HR → Employee) with the device PIN. The app will link them automatically on first contact — no manual linking needed.
+---
+
+## Attendance Flow
+
+1. Device pushes a punch (`ATTLOG` batch or `rtlog` / `realtime_glog` real-time).
+2. The PIN is mapped to an Employee via `Employee.attendance_device_id` (standard HRMS field, indexed).
+3. An **Employee Checkin** is created (idempotent — duplicate timestamps for the same employee are ignored).
+
+The device IN/OUT flag is intentionally **not** recorded; downstream attendance logic (first-in / last-out) is left to your HRMS / roster configuration.
+
+Unmapped PINs are skipped by default (the punch is logged, no checkin is created). Set **Do Not Skip Unknown Employee Checkin** in Settings to create checkins for unmapped PINs anyway.
+
+---
+
+## Enrollment & User Sync
+
+- Biometric templates are stored as **private File attachments** on the Attendance Device User (ZKTeco = a versioned JSON accumulating fingers/face/card; EBKN = the raw blob).
+- **Propagation is command-queue based and modality-dependent:** a fingerprint is pushed to another device via the classic `FINGERTMP` command; face/palm templates require unified-`biodata` firmware on the target. Enrollment is *not* magically mirrored everywhere — it's queued per assigned device.
+- **`Allow In All Devices`** on the Attendance Device User syncs that user to every non-disabled device instead of only the ones in its device list.
+- **Employee lifecycle:** Inactive/Left → `Delete User` queued for assigned devices; reactivated → `Enroll User` re-pushes the stored template; name change → `Update User`.
+
+---
+
+## Command Queue
+
+Commands are delivered when the device next polls (`/iclock/getrequest` or EBKN `receive_cmd`) and marked Success/Failed from the device's result. All command traffic is gated on device registration and each result is checked against the owning device.
+
+| Command | Purpose | Brands |
+|---------|---------|--------|
+| **Enroll User** | Push stored template(s) to the device | ZKTeco, EBKN |
+| **Delete User** | Remove the user from the device | ZKTeco, EBKN |
+| **Update User** | Sync name/profile (no biometrics) | ZKTeco, EBKN |
+| **Get Enroll Data** | Read the user's profile/templates from the device | ZKTeco, EBKN |
+| **Sync User List** | Pull the device's full user roster and create stubs | ZKTeco, EBKN |
+| **Re-pull Attendance** | Ask the device to re-upload stored logs for a date range (recover missed punches) | ZKTeco |
+| **Restart Device** | Reboot | ZKTeco, EBKN |
+| **Unlock Door** | Trigger the door relay | ZKTeco, EBKN |
+| **Set Device Time** | Sync the clock (EBKN explicit; ZKTeco auto-syncs) | ZKTeco, EBKN |
+
+Stale commands are auto-failed after a configurable number of attempts / days.
+
+---
+
+## Configuration Reference
+
+**Attendance Integration Settings** (Single):
+
+| Setting | Meaning |
+|---------|---------|
+| `device_poll_delay` / `device_error_delay` | Poll and error-retry intervals sent to ZKTeco devices. |
+| `trans_times` / `trans_interval` | ZKTeco transfer schedule. |
+| `maximum_command_attempts` | Attempts before a command is marked Failed. |
+| `force_close_after_days` | Age after which pending commands are force-closed. |
+| `enable_device_log` | Turn on the full audit log (off by default to avoid DB bloat). |
+| `do_not_skip_unknown_employee_checkin` | Create checkins for PINs not yet mapped to an Employee. |
+| `push_timezone_to_device` | Push the site/device timezone to ZKTeco devices. |
+| `proxy_enabled` / `proxy_port` | HTTP listener (self-hosted Nginx). |
 
 ---
 
@@ -154,28 +198,44 @@ When a user enrolls on a device, an **Attendance Device User** record is created
 
 | Doctype | Purpose |
 |---------|---------|
-| **Attendance Device** | One record per physical device. Tracks last contact, sync watermark, and pending commands. |
-| **Attendance Device User** | Maps a device PIN ↔ ERPNext Employee. Stores biometric templates for ZKTeco and EBKN. |
-| **Attendance Device Link** | Child table on Attendance Device User — lists which devices a user is enrolled on. |
-| **Attendance Device Command** | Pending command queue. Each record is delivered to the device and marked Success / Failed. |
-| **Attendance Device Log** | Audit log of all device communication. Unknown-device events always logged. |
-| **Attendance Integration Settings** | Global configuration (Single doctype). |
+| **Attendance Device** | One per physical device — identity, capabilities, assignment, last contact, sync watermark. |
+| **Attendance Device User** | PIN ↔ Employee mapping; stores biometric template blobs. |
+| **Attendance Device Link** | Child table — which devices a user is enrolled on. |
+| **Attendance Device Command** | The command queue. |
+| **Attendance Device Log** | Audit log of device traffic (unknown-device events always logged). |
+| **Attendance Integration Settings** | Global configuration. |
 
 ---
 
-## Discovering Unknown Devices
+## Troubleshooting
 
-Any device that contacts the server without a matching **Attendance Device** record is silently accepted (returns `OK` so the device doesn't disconnect) and its serial is written to **Attendance Device Log** with log type `Error`.
+- **Device shows in the log but no checkins appear** → the PIN isn't mapped to an Employee. Set the Employee's *Attendance Device ID*, or enable *Do Not Skip Unknown Employee Checkin*.
+- **"Device not registered" in the log** → create an Attendance Device whose Serial exactly matches the device's reported serial (see [Discovering Unknown Devices](#discovering-unknown-devices)).
+- **ZKTeco Return codes** (in a command's `device_response`): `0` = success; `-1` = command/format not supported by this firmware; `-1004` = query/table not supported (expected on classic firmware — see [dialects](#a-note-on-zkteco-firmware-dialects)).
+- **Command stuck Pending** → the device hasn't polled, isn't registered, or has *Disable Employee Sync* set. Check `Last Contact` and the log.
+- **Enrollment push fails on a new model** → fingerprint pushes use `FINGERTMP` (broadest support). If a device rejects it, capture the device's firmware/FP-version and open an issue.
 
-To find it: open **Attendance Device Log**, filter **Device** = *(blank)*. The **Serial / ID** column shows the raw serial reported by the device. Copy it, create the matching Attendance Device, and the device is registered.
+### Discovering Unknown Devices
+
+Any device without a matching Attendance Device record is accepted just enough to log its serial. Open **Attendance Device Log**, filter **Device** = *(blank)*, read the reported serial, and create the device.
 
 ---
 
-## Requirements
+## Security & Limitations
 
-- Frappe **v15** / ERPNext **v15** or later
-- Redis (standard Frappe requirement — used for EBKN multi-block buffering)
-- For the HTTP Listener: Nginx managed by bench (self-hosted only)
+The ZKTeco ADMS and EBKN protocols are **unauthenticated by design** — the only device identity is a self-reported serial number, which is trivially spoofable, and requests are processed in an elevated (Administrator) server context. This app hardens what it can:
+
+- Device endpoints (`getrequest` / `devicecmd` / `querydata`, and the whole `/ebkn` handler) are **gated on device registration**.
+- Device-reported command results are **verified against the owning device** before being applied.
+- UI/whitelisted management methods require the **System Manager** role.
+
+But the transport itself cannot be trusted. **Do not expose `/iclock/*` or `/ebkn` to the open internet.** Restrict them to the devices' network via a source-IP allowlist, VPN, or a dedicated VLAN, and never expose the plain-HTTP listener publicly. ADMS payload encryption is not supported.
+
+---
+
+## Migrating from v1
+
+The v2 architecture (this branch) replaces the v1 renderer/processor design. `bench migrate` runs `patches/v2_0/*` to move settings and device/user data forward. Review your Attendance Integration Settings after migrating. If you are pinned to v1, note that the default `main` branch may still carry v1-era code — use `--branch develop` for the current app.
 
 ---
 
@@ -183,9 +243,6 @@ To find it: open **Attendance Device Log**, filter **Device** = *(blank)*. The *
 
 MIT — see [LICENSE](LICENSE).
 
----
-
 ## Contact & Support
 
-Maintained by **Khaled Bin Amir**.
-For setup help, device compatibility questions, or to sponsor new features: [t.me/khaledbinamir](https://t.me/khaledbinamir)
+Maintained by **Khaled Bin Amir**. Setup help, device compatibility, or sponsoring features: [t.me/khaledbinamir](https://t.me/khaledbinamir)
