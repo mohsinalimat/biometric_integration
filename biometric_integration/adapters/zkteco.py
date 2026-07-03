@@ -129,7 +129,7 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         if sn and is_registered_device(sn):
             touch_device(sn)
             body_str = self.raw_body.decode("utf-8", errors="ignore")
-            _store_registry_capabilities(sn, body_str)
+            _store_device_capabilities(sn, body_str)
         maybe_log(sn or "unknown", "Handshake", "IN", f"Registry SN={sn}",
                   raw_data=self.raw_dump("RegistryCode=0"))
         return self.text("RegistryCode=0")
@@ -206,7 +206,19 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             return self._process_rtlog(sn, body_str)
         if table == "OPERLOG":
             return self._process_operlog(sn, body_str)
-        # options, rtstate, tabledata, etc. — acknowledge
+        if table == "options":
+            # Device pushes its capabilities (firmware, MAC, max users, FP/face
+            # algorithm versions, function switches). Capture them onto the device.
+            _store_device_capabilities(sn, body_str)
+            return self.text("OK")
+        if table == "tabledata":
+            # Unified template (biodata) upload via cdata. Some firmware answers a
+            # biodata DATA QUERY here instead of via /iclock/querydata.
+            tablename = args.get("tablename", "")
+            if tablename.lower() == "biodata":
+                n = _process_biodata_records(sn, body_str)
+                return self.text(f"biophoto={n}")
+        # rtstate and other tables — acknowledge
         return self.text("OK")
 
     def _process_attlog(self, sn: str, body: str) -> Response:
@@ -330,6 +342,24 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             sn = args.get("SN") or args.get("sn")
             body_str = self.raw_body.decode("utf-8", errors="ignore")
             return self._process_attlog(sn or "", body_str)
+
+        # Unified biometric template query response (Get Enroll Data). Each line
+        # carries type/majorver/format — what we need to re-enroll on other models.
+        if table.lower() == "biodata":
+            sn = args.get("SN") or args.get("sn")
+            body_str = self.raw_body.decode("utf-8", errors="ignore")
+            n = _process_biodata_records(sn or "", body_str)
+            if cmd_id and n:
+                try:
+                    frappe.db.set_value("Attendance Device Command", cmd_id, {
+                        "status": "Success",
+                        "closed_on": frappe.utils.now_datetime(),
+                        "device_response": f"Received {n} template(s)",
+                    })
+                    frappe.db.commit()
+                except Exception:
+                    pass
+            return self.text(f"biophoto={n}")
 
         if table != "user":
             return self.text(f"{table}={count_str}")
@@ -500,34 +530,70 @@ def _handle_operlog_face(sn: str, line: str) -> int:
     return 1
 
 
-def _handle_operlog_biodata(sn: str, line: str) -> int:
-    """Handle a biodata line from OPERLOG — newer unified firmware format.
+def _process_biodata_records(sn: str, body: str) -> int:
+    """Parse a body containing one or more `biodata ...` template lines and merge
+    each into its user's ZKTeco enrollment JSON. Returns the number stored.
 
-    biodata pin=X no=Y index=I valid=V duress=D type=T majorver=M minorver=m size=S TMP=base64
-    Covers all biometric types: 1=FP, 2=NIR face, 8=Palm vein, 9=Visible face, etc.
+    Used for both OPERLOG uploads and DATA QUERY biodata responses (querydata or
+    cdata?table=tabledata).
     """
-    m = re.search(
-        r"biodata\s+pin=(\S+)\s+no=(\d+)\s+index=(\d+)\s+valid=(\d+)\s+duress=(\d+)"
-        r"\s+type=(\d+)(?:\s+majorver=(\d+))?(?:\s+minorver=(\d+))?(?:\s+size=(\d+))?\s+TMP=(\S+)",
-        line, re.IGNORECASE,
-    )
-    if not m:
+    stored = 0
+    for line in body.strip().splitlines():
+        line = line.strip()
+        if line.lower().startswith("biodata"):
+            try:
+                stored += _handle_operlog_biodata(sn, line)
+            except Exception as exc:
+                frappe.log_error(title="ZKTeco biodata Parse Error",
+                                 message=f"SN={sn} Line: {line!r}\n{exc}")
+    return stored
+
+
+def _parse_biodata_fields(line: str) -> dict:
+    """Parse a `biodata k=v k=v ... tmp=base64` line into a lowercase-keyed dict.
+
+    Tolerant of both space- and tab-separated fields and either `tmp=`/`TMP=`.
+    The template value is the last field and is base64 (no embedded whitespace),
+    so a plain whitespace split is safe.
+    """
+    body = re.sub(r"^\s*biodata\s+", "", line, flags=re.IGNORECASE)
+    fields: dict = {}
+    for tok in body.split():
+        if "=" in tok:
+            k, _, v = tok.partition("=")
+            fields[k.strip().lower()] = v.strip()
+    return fields
+
+
+def _handle_operlog_biodata(sn: str, line: str) -> int:
+    """Handle a biodata line — newer unified firmware format (all firmware/models).
+
+    biodata pin=X no=Y index=I valid=V duress=D type=T majorver=M minorver=m format=F tmp=base64
+    Covers all biometric types: 1=FP, 2=NIR face, 8=Palm vein, 9=Visible face, etc.
+    `format` (0=ZK, 1=ISO, 2=ANSI) and `majorver` (algorithm version) are captured
+    so the template can be pushed back to any device that shares the same version.
+    """
+    f = _parse_biodata_fields(line)
+    tmp = f.get("tmp")
+    pin = f.get("pin")
+    if not tmp or not pin:
         return 0
-    pin = m.group(1)
     user_doc = get_or_create_user_by_pin(pin)
     update_zkteco_enrollment(user_doc, sn, biometric={
-        "type": int(m.group(6)),
-        "no": int(m.group(2)),
-        "index": int(m.group(3)),
-        "size": int(m.group(9) or 0),
-        "valid": int(m.group(4)),
-        "duress": int(m.group(5)),
-        "majorver": int(m.group(7) or 0),
-        "minorver": int(m.group(8) or 0),
-        "tmp": m.group(10),
+        "type": int(f.get("type", 1)),
+        "no": int(f.get("no", 0)),
+        "index": int(f.get("index", 0)),
+        "size": int(f.get("size", 0)),
+        "valid": int(f.get("valid", 1)),
+        "duress": int(f.get("duress", 0)),
+        "majorver": int(f.get("majorver", 0)),
+        "minorver": int(f.get("minorver", 0)),
+        "format": int(f.get("format", 0)),
+        "tmp": tmp,
     })
-    bio_type = m.group(6)
-    maybe_log(sn, "Enrollment", "IN", f"biodata PIN={pin} type={bio_type} no={m.group(2)}", user_pin=pin)
+    maybe_log(sn, "Enrollment", "IN",
+              f"biodata PIN={pin} type={f.get('type')} no={f.get('no')} majorver={f.get('majorver')}",
+              user_pin=pin)
     return 1
 
 
@@ -688,50 +754,59 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
         return naive_ts  # on any error, fall back to as-is
 
 
-def _store_registry_capabilities(sn: str, body: str) -> None:
-    """Parse ZKTeco registry POST body and store capability fields on the device record.
+def _parse_device_kv(body: str) -> dict:
+    """Parse a device capability body into a key=value dict.
 
-    Three wire formats observed in the wild:
+    Three wire formats observed in the wild (registry POST and table=options POST):
     1. Comma-separated (ADMS spec):
          DeviceType=acc,~DeviceName=MB360,FirmVer=14.00,MAC=00:17:61:xx:xx:xx,...
-    2. URL-encoded (some firmware):
-         SN=xxx&FirmVer=14.00&MAC=00:17:61:xx:xx:xx&MaxUserCount=3000&...
-    3. Newline-separated (older firmware):
-         FirmVer=14.00\nMAC=00:17:61:xx:xx:xx\n...
+         FWVersion=...,FPVersion=10,FingerFunOn=1,FaceFunOn=1,~MaxUserCount=100,...
+    2. URL-encoded (some firmware):  SN=xxx&FirmVer=14.00&MAC=...&MaxUserCount=3000
+    3. Newline-separated (older firmware):  FirmVer=14.00\nMAC=...\n...
 
     Fields prefixed with ~ in the ADMS spec are optional; we strip the tilde.
     """
     from urllib.parse import parse_qs
 
     kv: dict = {}
-    body = body.strip()
+    body = (body or "").strip()
+    if not body:
+        return kv
 
     if "&" in body and "\n" not in body:
-        # URL-encoded form data
         for k, vals in parse_qs(body, keep_blank_values=True).items():
-            kv[k.strip()] = vals[0] if vals else ""
-    elif "," in body and "=" in body and "\n" not in body:
-        # Comma-separated ADMS spec format — strip optional ~ prefix on keys
-        for part in body.split(","):
+            kv[k.strip().lstrip("~")] = vals[0] if vals else ""
+    elif "," in body and "=" in body:
+        # Comma-separated ADMS spec — also split on newlines (PDF-style wrapping)
+        for part in re.split(r"[,\n]", body):
             part = part.strip().lstrip("~")
             if "=" in part:
                 k, _, v = part.partition("=")
                 kv[k.strip()] = v.strip()
     else:
-        # Newline-separated key=value (older firmware)
         for line in body.splitlines():
             line = line.strip().lstrip("~")
             if "=" in line:
                 k, _, v = line.partition("=")
                 kv[k.strip()] = v.strip()
+    return kv
 
+
+def _store_device_capabilities(sn: str, body: str) -> None:
+    """Parse a registry or table=options body and store capability fields on the device.
+
+    Captures firmware, MAC, max users, the fingerprint algorithm version (fp_version —
+    critical: templates only transfer between devices sharing it) and the supported
+    biometric modalities (from an explicit list or the FingerFunOn/FaceFunOn switches).
+    """
+    if not sn:
+        return
+    kv = _parse_device_kv(body)
     updates: dict = {}
-    if kv.get("FirmVer"):
-        updates["firmware_version"] = kv["FirmVer"]
-    if kv.get("DeviceName"):
-        # DeviceName from registry may be more precise than user-entered device_name;
-        # only populate firmware_version/MAC/capabilities — don't overwrite user's name.
-        pass
+
+    fw = kv.get("FWVersion") or kv.get("FirmVer")
+    if fw:
+        updates["firmware_version"] = fw
     if kv.get("MAC"):
         updates["mac_address"] = kv["MAC"]
     if kv.get("MaxUserCount"):
@@ -739,8 +814,27 @@ def _store_registry_capabilities(sn: str, body: str) -> None:
             updates["max_users"] = int(kv["MaxUserCount"])
         except ValueError:
             pass
-    # MultiBioDataSupport e.g. "FP,FACE,CARD" or "0101" bitmask — store as-is.
+    fpv = kv.get("FPVersion") or kv.get("ZKFPVersion")
+    if fpv:
+        try:
+            updates["fp_version"] = int(fpv)
+        except ValueError:
+            pass
+
+    # Supported biometrics: explicit list if present, else derive from function switches.
     bio = kv.get("MultiBioDataSupport") or kv.get("BioSupport") or kv.get("SupportedBio")
+    if not bio:
+        modalities = []
+        if kv.get("FingerFunOn") == "1":
+            modalities.append("Fingerprint")
+        if kv.get("FaceFunOn") == "1":
+            modalities.append("Face")
+        if kv.get("FvFunOn") == "1":
+            modalities.append("Finger Vein")
+        if kv.get("PvFunOn") == "1":
+            modalities.append("Palm Vein")
+        if modalities:
+            bio = ", ".join(modalities)
     if bio:
         updates["supported_biometrics"] = bio
 

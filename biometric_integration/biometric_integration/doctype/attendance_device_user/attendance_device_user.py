@@ -55,14 +55,16 @@ def update_zkteco_enrollment(
         "card": "0",
         "passwd": "",
         "biometrics": [
-          {"type": 1, "no": 0, "index": 0, "size": 512, "valid": 1,
-           "duress": 0, "majorver": 10, "minorver": 0, "tmp": "base64..."},
-          {"type": 9, "no": 0, "index": 0, "size": 2048, "valid": 1,
-           "duress": 0, "majorver": 1,  "minorver": 0, "tmp": "base64..."}
+          {"type": 1, "no": 0, "index": 0, "size": 512, "valid": 1, "duress": 0,
+           "majorver": 10, "minorver": 0, "format": 0, "tmp": "base64..."},
+          {"type": 9, "no": 0, "index": 0, "size": 2048, "valid": 1, "duress": 0,
+           "majorver": 1,  "minorver": 0, "format": 0, "tmp": "base64..."}
         ]
       }
 
     biometric type values: 1=Fingerprint, 2=NIR Face, 8=Palm vein, 9=Visible Face
+    `majorver` = algorithm version (must match the target device's fp_version to
+    transfer), `format` = template encoding (0=ZK, 1=ISO, 2=ANSI).
     """
     existing = _load_zkteco_enrollment(user_doc)
 

@@ -25,6 +25,7 @@
   "supported_biometrics",
   "column_break_cap",
   "max_users",
+  "fp_version",
   "device_timezone",
   "section_assignment",
   "company",
@@ -152,6 +153,13 @@
    "fieldtype": "Int",
    "label": "Max Users",
    "read_only": 1
+  },
+  {
+   "fieldname": "fp_version",
+   "fieldtype": "Int",
+   "label": "Fingerprint Algorithm Version",
+   "read_only": 1,
+   "description": "ZKTeco FP algorithm version (e.g. 10). Templates only transfer between devices sharing the same version — populated automatically from device options."
   },
   {
    "fieldname": "device_timezone",

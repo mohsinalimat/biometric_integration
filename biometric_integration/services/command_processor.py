@@ -174,10 +174,18 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         return f"C:{cmd_id}:DATA DELETE USERINFO PIN={pin}"
 
     if cmd_doc.command_type == "Get Enroll Data":
-        return "\n".join([
-            f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}",
-            f"C:{cmd_id}:DATA QUERY FPTMP PIN={pin}",
-        ])
+        # Pull the profile plus every biometric template via the unified `biodata`
+        # table. The filter MUST include Type (ADMS requirement), and a query for a
+        # modality the device lacks simply returns nothing, so we sweep all supported
+        # types: 1=FP, 2=NIR face, 8=Palm vein, 9=Visible face. Unlike the legacy
+        # FPTMP query, biodata responses carry majorver/format — the algorithm
+        # metadata needed to re-enroll the template on a different device model.
+        lines = [f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}"]
+        for bio_type in (1, 2, 8, 9):
+            lines.append(
+                f"C:{cmd_id}:DATA QUERY tablename=biodata,fielddesc=*,filter=Type={bio_type}\tPin={pin}"
+            )
+        return "\n".join(lines)
 
     if cmd_doc.command_type == "Update User":
         return f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd=\tCard=0"
@@ -196,22 +204,45 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             # Current format — full JSON with all biometrics + credentials
             card = enroll.get("card", "0")
             passwd = enroll.get("passwd", "")
+            # Cross-model guard: a fingerprint template only matches on a device with
+            # the same FP algorithm version. If the target device's fp_version is known
+            # and differs from a template's majorver, surface it (the device would
+            # otherwise silently reject the biodata line with Return=-1).
+            target_fp = frappe.db.get_value("Attendance Device", cmd_doc.attendance_device, "fp_version")
+            if target_fp:
+                for bio in enroll.get("biometrics", []):
+                    mv = bio.get("majorver", 0)
+                    if bio.get("type") == 1 and mv and int(mv) != int(target_fp):
+                        frappe.log_error(
+                            title="Biometric Enrollment Algorithm Mismatch",
+                            message=(
+                                f"User {user_doc.name} (PIN {pin}): fingerprint template "
+                                f"majorver={mv} but target device {cmd_doc.attendance_device} "
+                                f"fp_version={target_fp}. Template may be rejected — re-enroll "
+                                f"the finger directly on this device model."
+                            ),
+                        )
+                        break
             lines = [
                 f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd={passwd}\tCard={card}",
             ]
             for bio in enroll.get("biometrics", []):
                 lines.append(
+                    # ZKTeco ADMS "DATA UPDATE biodata" — field names are
+                    # lowercase and it takes `format` (0=ZK), NOT `Size`
+                    # (per PUSH SDK doc, Unified Template). Capitalised names
+                    # or a Size field make the device reject with Return=-1.
                     f"C:{cmd_id}:DATA UPDATE biodata"
                     f"\tpin={pin}"
-                    f"\tNo={bio['no']}"
-                    f"\tIndex={bio.get('index', 0)}"
-                    f"\tValid={bio.get('valid', 1)}"
-                    f"\tDuress={bio.get('duress', 0)}"
-                    f"\tType={bio['type']}"
-                    f"\tMajorVer={bio.get('majorver', 0)}"
-                    f"\tMinorVer={bio.get('minorver', 0)}"
-                    f"\tSize={bio['size']}"
-                    f"\tTMP={bio['tmp']}"
+                    f"\tno={bio['no']}"
+                    f"\tindex={bio.get('index', 0)}"
+                    f"\tvalid={bio.get('valid', 1)}"
+                    f"\tduress={bio.get('duress', 0)}"
+                    f"\ttype={bio['type']}"
+                    f"\tmajorver={bio.get('majorver', 0)}"
+                    f"\tminorver={bio.get('minorver', 0)}"
+                    f"\tformat={bio.get('format', 0)}"
+                    f"\ttmp={bio['tmp']}"
                 )
             return "\n".join(lines)
         elif enroll and "fid" in enroll:

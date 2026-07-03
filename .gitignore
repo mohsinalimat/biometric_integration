@@ -8,3 +8,7 @@ __pycache__*.bin
 ebkn_fkweb_specs.txt
 zkteco_adms_specs.md
 gemini_research.txt
+# Proprietary protocol references — kept local only, never committed
+docs/
+*.pdf
+.claude-flow/
