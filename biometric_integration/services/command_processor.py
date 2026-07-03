@@ -13,57 +13,116 @@ import json
 from typing import Any, Optional, Union
 
 import frappe
-from frappe.utils import cint, now, now_datetime, get_datetime
+from frappe.utils import cint, now, now_datetime, get_datetime, add_to_date
+
+# A command stays "Sent" (not re-emitted) for this long after it is handed to a
+# device, giving the device time to acknowledge before we re-send. If no ack
+# arrives within the window it is re-sent (reliability); once the device reports
+# a result the ack handlers move it to Success/Failed.
+COMMAND_RESEND_SECONDS = 60
+
+
+def _claim_next_command(device_sn: str) -> Optional[str]:
+    """Atomically claim the next command to emit for a device.
+
+    Picks the oldest command that is Pending, or Sent-but-unacknowledged past the
+    resend window, and flips it to Sent (stamping sent_on + bumping attempts) via a
+    compare-and-swap so two concurrent device polls can't grab the same command.
+    Returns the claimed command name, or None (queue empty or lost the race).
+    """
+    settings = frappe.get_cached_doc("Attendance Integration Settings")
+    max_attempts = cint(settings.maximum_command_attempts) or 3
+    cutoff = add_to_date(now_datetime(), seconds=-COMMAND_RESEND_SECONDS)
+    claimable = (
+        "(status='Pending' OR (status='Sent' AND (sent_on IS NULL OR sent_on < %(cutoff)s)))"
+    )
+    # Bounded loop: fail any candidate that has hit the attempt cap (the raw-SQL
+    # claim below bypasses the doctype's before_save auto-fail), then take the next.
+    for _ in range(10):
+        rows = frappe.db.sql(
+            f"""SELECT name, no_of_attempts FROM `tabAttendance Device Command`
+                WHERE attendance_device=%(sn)s AND {claimable}
+                ORDER BY creation ASC LIMIT 1""",
+            {"sn": device_sn, "cutoff": cutoff},
+        )
+        if not rows:
+            # Queue drained — clear the sticky "pending command" indicator.
+            if frappe.db.get_value("Attendance Device", device_sn, "has_pending_command"):
+                frappe.db.set_value("Attendance Device", device_sn, "has_pending_command", 0,
+                                    update_modified=False)
+                frappe.db.commit()
+            return None
+
+        name, attempts = rows[0][0], cint(rows[0][1])
+        if attempts >= max_attempts:
+            frappe.db.set_value("Attendance Device Command", name,
+                                {"status": "Failed", "closed_on": now_datetime()},
+                                update_modified=False)
+            frappe.db.commit()
+            continue  # look for the next claimable command
+
+        # Compare-and-swap: only the worker whose UPDATE changes the row wins,
+        # so concurrent device polls can't emit the same command twice.
+        frappe.db.sql(
+            f"""UPDATE `tabAttendance Device Command`
+                SET status='Sent', sent_on=%(now)s, no_of_attempts=COALESCE(no_of_attempts,0)+1
+                WHERE name=%(name)s AND {claimable}""",
+            {"name": name, "now": now_datetime(), "cutoff": cutoff},
+        )
+        claimed = frappe.db._cursor.rowcount
+        frappe.db.commit()
+        if claimed:
+            return name
+        # Lost the race for this row — try the next candidate.
+    return None
+
+
+def _finish(cmd_doc: Any, status: str, response: Optional[str] = None) -> None:
+    """Move a command to a terminal state (used by commands that complete on send)."""
+    cmd_doc.status = status
+    cmd_doc.closed_on = now_datetime()
+    if response is not None:
+        cmd_doc.device_response = response
+    cmd_doc.save(ignore_permissions=True)
+    frappe.db.commit()
 
 
 def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
-    """Return the next pending command payload for the device, or None if none.
+    """Return the next command payload for the device, or None if none.
+
+    The command is claimed atomically and marked Sent before its payload is built,
+    so it is emitted once and not re-sent until the resend window elapses without an
+    acknowledgement. Commands that complete on send (Restart, Re-pull, ZKTeco Set
+    Time) set their own terminal status; the rest stay Sent until the device acks.
 
     ZKTeco commands return a string (ADMS protocol lines).
     EBKN commands return a dict with cmd_code/trans_id/body.
     """
-    command_name = frappe.db.get_value(
-        "Attendance Device Command",
-        {"attendance_device": device_sn, "status": "Pending"},
-        "name",
-        order_by="creation asc",
-    )
+    command_name = _claim_next_command(device_sn)
     if not command_name:
-        # Queue drained — clear the sticky "pending command" indicator on the device.
-        if frappe.db.get_value("Attendance Device", device_sn, "has_pending_command"):
-            frappe.db.set_value("Attendance Device", device_sn, "has_pending_command", 0,
-                                update_modified=False)
-            frappe.db.commit()
         return None
 
     cmd_doc = frappe.get_doc("Attendance Device Command", command_name)
+    # cmd_doc is now Sent, sent_on stamped, no_of_attempts bumped (by the claim).
 
     if cmd_doc.command_type == "Restart Device":
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
-        cmd_doc.status = "Success"
-        cmd_doc.closed_on = now_datetime()
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
+        _finish(cmd_doc, "Success")
         if brand == "EBKN":
             return {"trans_id": cmd_doc.name, "cmd_code": "RESET_FK", "body": ""}
         return f"C:{cmd_doc.name}:REBOOT"  # ZKTeco
 
     if cmd_doc.command_type == "Unlock Door":
+        # Stays Sent — device reports the result via devicecmd (ZKTeco) or
+        # send_cmd_result (EBKN), which moves it to Success/Failed.
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
-        # Leave as Pending — device will report result via devicecmd (ZKTeco) or
-        # send_cmd_result (EBKN), which updates status to Success or Failed.
-        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
         if brand == "EBKN":
             return {"trans_id": cmd_doc.name, "cmd_code": "OPEN_DOOR", "body": json.dumps({"door_no": 1})}
         return f"C:{cmd_doc.name}:CONTROL DEVICE 1"  # ZKTeco: door relay open
 
     if cmd_doc.command_type == "Sync User List":
+        # Stays Sent — result arrives via querydata (ZKTeco) / send_cmd_result (EBKN).
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
-        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
         if brand == "EBKN":
             return {"trans_id": cmd_doc.name, "cmd_code": "GET_USER_ID_LIST", "body": ""}
         # ZKTeco: classic all-users query (widest firmware support — the newer
@@ -74,9 +133,6 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
 
     if cmd_doc.command_type == "Set Device Time":
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
-        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
         if brand == "EBKN":
             time_str = _ebkn_now_for_device(device_sn)
             return {
@@ -86,29 +142,18 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
             }
         # ZKTeco devices sync clock via /iclock/rtdata?type=time on their own
         # cadence — there is no out-of-band SET_TIME equivalent. Mark Success
-        # so the user gets feedback instead of a stuck Pending command.
-        cmd_doc.status = "Success"
-        cmd_doc.closed_on = now_datetime()
-        cmd_doc.device_response = (
-            "ZKTeco devices auto-sync via /iclock/rtdata; no command sent."
-        )
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
+        # so the user gets feedback instead of a stuck command.
+        _finish(cmd_doc, "Success", "ZKTeco devices auto-sync via /iclock/rtdata; no command sent.")
         return None
 
     if cmd_doc.command_type == "Re-pull Attendance":
         # Ask the device to re-upload stored attendance logs for a date range.
-        # ZKTeco answers a `DATA QUERY ATTLOG` by POSTing the records to
-        # /iclock/cdata?table=ATTLOG, which the normal _process_attlog path ingests
-        # (duplicates are rejected by Employee Checkin, so re-pulls are safe).
-        # Marked done-on-send so it is emitted exactly once (not re-queried every poll).
+        # ZKTeco answers `DATA QUERY ATTLOG` by POSTing the records to
+        # /iclock/cdata?table=ATTLOG (ingested by _process_attlog; duplicates are
+        # rejected). Done-on-send so it is emitted exactly once.
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
         if brand != "ZKTeco":
-            cmd_doc.status = "Failed"
-            cmd_doc.closed_on = now_datetime()
-            cmd_doc.device_response = "Re-pull Attendance is only supported for ZKTeco devices."
-            cmd_doc.save(ignore_permissions=True)
-            frappe.db.commit()
+            _finish(cmd_doc, "Failed", "Re-pull Attendance is only supported for ZKTeco devices.")
             return None
         start_s = (
             get_datetime(cmd_doc.repull_start).strftime("%Y-%m-%d %H:%M:%S")
@@ -118,21 +163,13 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
             get_datetime(cmd_doc.repull_end).strftime("%Y-%m-%d %H:%M:%S")
             if cmd_doc.repull_end else now_datetime().strftime("%Y-%m-%d %H:%M:%S")
         )
-        cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
-        cmd_doc.status = "Success"
-        cmd_doc.closed_on = now_datetime()
-        cmd_doc.device_response = f"Sent: DATA QUERY ATTLOG StartTime={start_s} EndTime={end_s}"
-        cmd_doc.save(ignore_permissions=True)
-        frappe.db.commit()
+        _finish(cmd_doc, "Success", f"Sent: DATA QUERY ATTLOG StartTime={start_s} EndTime={end_s}")
         return f"C:{cmd_doc.name}:DATA QUERY ATTLOG StartTime={start_s}\tEndTime={end_s}"
 
+    # Enroll / Delete / Update User, Get Enroll Data — stay Sent until the device
+    # acks. The claim already bumped attempts, so just build and return the payload.
     try:
-        payload = _build_payload(cmd_doc)
-        if payload:
-            cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
-            cmd_doc.save(ignore_permissions=True)
-            frappe.db.commit()
-        return payload
+        return _build_payload(cmd_doc)
     except Exception as exc:
         _handle_build_failure(cmd_doc, exc)
         return None
@@ -146,7 +183,7 @@ def force_close_stale_commands() -> None:
 
     stale = frappe.get_all(
         "Attendance Device Command",
-        filters={"status": "Pending", "initiated_on": ["<", cutoff]},
+        filters={"status": ["in", ["Pending", "Sent"]], "initiated_on": ["<", cutoff]},
         pluck="name",
     )
     for name in stale:

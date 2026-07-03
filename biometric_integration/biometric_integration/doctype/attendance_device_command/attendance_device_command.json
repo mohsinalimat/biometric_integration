@@ -17,6 +17,7 @@
   "repull_end",
   "status",
   "initiated_on",
+  "sent_on",
   "closed_on",
   "no_of_attempts",
   "response_section",
@@ -92,7 +93,7 @@
    "in_standard_filter": 1,
    "label": "Status",
    "no_copy": 1,
-   "options": "Pending\nSuccess\nFailed\nClosed"
+   "options": "Pending\nSent\nSuccess\nFailed\nClosed"
   },
   {
    "default": "Now",
@@ -100,6 +101,14 @@
    "fieldtype": "Datetime",
    "label": "Initiated On",
    "no_copy": 1
+  },
+  {
+   "fieldname": "sent_on",
+   "fieldtype": "Datetime",
+   "label": "Last Sent On",
+   "no_copy": 1,
+   "read_only": 1,
+   "description": "When the command was last emitted to the device; used to space out re-sends until the device acknowledges."
   },
   {
    "fieldname": "closed_on",
