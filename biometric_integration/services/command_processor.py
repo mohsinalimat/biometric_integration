@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional, Union
 
 import frappe
 from frappe.utils import cint, now, now_datetime, get_datetime
@@ -29,6 +29,11 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         order_by="creation asc",
     )
     if not command_name:
+        # Queue drained — clear the sticky "pending command" indicator on the device.
+        if frappe.db.get_value("Attendance Device", device_sn, "has_pending_command"):
+            frappe.db.set_value("Attendance Device", device_sn, "has_pending_command", 0,
+                                update_modified=False)
+            frappe.db.commit()
         return None
 
     cmd_doc = frappe.get_doc("Attendance Device Command", command_name)

@@ -3,7 +3,10 @@ app_title = "Biometric Integration"
 app_publisher = "KhaledBinAmir"
 app_description = "Real-time attendance integration for ZKTeco and EBKN biometric devices"
 app_email = "khaledbinamir@gmail.com"
-app_license = "mit"
+app_license = "MIT"
+
+# Fail install fast if HRMS (Employee / Employee Checkin) is absent.
+required_apps = ["frappe/hrms"]
 
 # --- Routing: intercept /iclock/* and /ebkn before Frappe's template renderer ---
 # This makes the app work on Frappe Cloud AND self-hosted without any Nginx dependency.
@@ -27,11 +30,6 @@ scheduler_events = {
 default_log_clearing_doctypes = {
     "Attendance Device Log": 30,
     "Attendance Device Command": 90,
-}
-
-# --- Employee form extension ---
-doctype_js = {
-    "Employee": "biometric_integration/public/js/employee.js",
 }
 
 # --- Document Events ---
@@ -62,6 +60,3 @@ fixtures = [
         ]]],
     },
 ]
-
-# --- CLI (kept for advanced / self-hosted users) ---
-console_scripts = ["biometric-listener=biometric_integration.commands.cli:main"]

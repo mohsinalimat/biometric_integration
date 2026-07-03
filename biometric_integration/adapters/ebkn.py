@@ -70,6 +70,15 @@ class EBKNAdapter(AbstractDeviceAdapter):
         if not request_code or not dev_id:
             return _build_response("ERROR", trans_id=trans_id)
 
+        # Gate everything on device registration BEFORE buffering any block, so a
+        # forged dev_id can't grow Redis buffers or reach the handlers. EBKN devices
+        # are pre-created in ERPNext (no auto-registration handshake).
+        if not is_registered_device(dev_id):
+            maybe_log(dev_id, "Error", "IN",
+                      f"Request from unregistered device dev_id={dev_id} ({request_code}) — rejected",
+                      force=True)
+            return _build_response("ERROR", trans_id=trans_id)
+
         try:
             blk_no = int(blk_no_raw) if blk_no_raw is not None else None
         except (TypeError, ValueError):
@@ -230,6 +239,15 @@ def _handle_send_cmd_result(payload: dict, ctx: dict) -> Reply:
 
     try:
         cmd_doc = frappe.get_doc("Attendance Device Command", trans_id)
+        # Ownership: a device may only report results for its own commands
+        # (trans_ids are sequential — otherwise a forged result could poison
+        # another device's enrollment via _store_enrollment_blob).
+        if cmd_doc.attendance_device != dev_id:
+            frappe.log_error(
+                title="EBKN send_cmd_result: command not owned by device",
+                message=f"trans_id={trans_id} dev_id={dev_id} owner={cmd_doc.attendance_device}",
+            )
+            return _ok_bytes(), 200, _resp_headers(trans_id=trans_id)
         cmd_doc.no_of_attempts = (cmd_doc.no_of_attempts or 0) + 1
         from frappe.utils import now
         line = f"[{now()}] {cmd_return_code}"
@@ -360,6 +378,13 @@ def _store_enrollment_blob(dev_id: str, user_id: str, blob: bytes) -> None:
 # Redis block cache (multi-worker safe)
 # ---------------------------------------------------------------------------
 
+# Bounds on a single reassembled multi-block payload. Real enroll blobs are
+# tens of KB (doc: "up to 20KB"); these caps stop a forged block sequence from
+# growing a Redis key without limit.
+_MAX_BLOCK_BUFFER_BYTES = 8 * 1024 * 1024
+_MAX_BLOCK_COUNT = 512
+
+
 def _cache_key(dev_id: str, request_code: str) -> str:
     return f"ebkn_block:{dev_id}:{request_code}"
 
@@ -398,6 +423,16 @@ def _cache_append(dev_id: str, request_code: str, data: bytes, blk_no: int | Non
             return False
 
     existing: bytes = frappe.cache.get_value(key) or b""
+    # Bound total buffer size / block count against a runaway or forged sequence.
+    if len(existing) + len(data) > _MAX_BLOCK_BUFFER_BYTES or (
+        blk_no is not None and blk_no > _MAX_BLOCK_COUNT
+    ):
+        frappe.cache.delete_value(key)
+        frappe.cache.delete_value(seq_key)
+        maybe_log(dev_id, "Error", "IN",
+                  f"EBKN block buffer for {request_code} exceeded limits "
+                  f"(bytes={len(existing) + len(data)}, blk_no={blk_no}) — dropped")
+        return False
     frappe.cache.set_value(key, existing + data, expires_in_sec=300)
     if blk_no is not None and blk_no >= 1:
         frappe.cache.set_value(seq_key, blk_no, expires_in_sec=300)

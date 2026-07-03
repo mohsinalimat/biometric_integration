@@ -23,7 +23,6 @@ Protocol flow:
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timezone
 
@@ -35,7 +34,6 @@ from biometric_integration.services.checkin import create_employee_checkin
 from biometric_integration.services.command_processor import process_device_command
 from biometric_integration.biometric_integration.doctype.attendance_device_user.attendance_device_user import (
     get_or_create_user_by_pin,
-    save_enrollment_data,
     update_zkteco_enrollment,
 )
 from biometric_integration.biometric_integration.doctype.attendance_device_log.attendance_device_log import maybe_log
@@ -332,9 +330,17 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         Get Enroll Data for any PINs not already known to Frappe.
         All other table types are acknowledged and ignored.
         """
+        sn0 = args.get("SN") or args.get("sn")
+        if not is_registered_device(sn0):
+            return self.text("ERROR: Device not registered.")
+
         table = args.get("tablename", "")
         cmd_id = args.get("cmdid")
         count_str = args.get("count", "0")
+
+        # Ownership: only let a device close its own command (names are sequential).
+        if cmd_id and frappe.db.get_value("Attendance Device Command", cmd_id, "attendance_device") != sn0:
+            cmd_id = None
 
         # Some firmware returns a `DATA QUERY ATTLOG` result here instead of via a
         # plain /iclock/cdata?table=ATTLOG POST — route it through the same parser.
@@ -409,6 +415,11 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         sn = args.get("SN") or args.get("sn")
         if not sn:
             return self.text("ERROR: Missing SN", 400)
+        # Gate on registration: command payloads (Enroll User) carry raw biometric
+        # templates + PII, so an unregistered/forged serial must never be able to
+        # poll them out of the queue.
+        if not is_registered_device(sn):
+            return self.text("ERROR: Device not registered.")
         command_str = process_device_command(sn)
         if command_str:
             maybe_log(sn, "Command", "OUT", f"Sending command to {sn}", raw_data=command_str)
@@ -419,6 +430,9 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
     # ------------------------------------------------------------------
 
     def _handle_devicecmd(self, args) -> Response:
+        sn = args.get("SN") or args.get("sn")
+        if not is_registered_device(sn):
+            return self.text("ERROR: Device not registered.")
         body_str = self.raw_body.decode("utf-8", errors="ignore")
         for line in body_str.strip().split("\n"):
             from urllib.parse import parse_qs
@@ -433,6 +447,14 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
             if cmd_id:
                 try:
                     cmd_doc = frappe.get_doc("Attendance Device Command", cmd_id)
+                    # Ownership check: a device may only report results for its own
+                    # commands. Command names are sequential, so without this a forged
+                    # request could mark or poison another device's command.
+                    if cmd_doc.attendance_device != sn:
+                        maybe_log(sn, "Error", "IN",
+                                  f"devicecmd for command {cmd_id} not owned by {sn} — ignored",
+                                  force=True)
+                        continue
                     cmd_doc.device_response = (
                         f"{cmd_doc.device_response or ''}\n{line}".strip()
                     )

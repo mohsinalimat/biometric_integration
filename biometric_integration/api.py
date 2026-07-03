@@ -22,6 +22,7 @@ def get_endpoint_urls() -> dict:
     When the HTTP listener is active, plain-HTTP alternatives are shown.
     A best-effort public IP lookup (api.ipify.org) adds a raw IP:port line.
     """
+    frappe.only_for("System Manager")
     import urllib.request
     from urllib.parse import urlparse
 
@@ -98,6 +99,7 @@ def get_proxy_status() -> dict:
 @frappe.whitelist()
 def get_generated_nginx_config(port: int = 8998) -> str:
     """Return a ready-to-use nginx server block for manual installation."""
+    frappe.only_for("System Manager")
     from biometric_integration.proxy.template import get_server_block
     return get_server_block(frappe.local.site, int(port))
 
@@ -105,6 +107,7 @@ def get_generated_nginx_config(port: int = 8998) -> str:
 @frappe.whitelist()
 def enqueue_all_enrollments(device_id: str) -> str:
     """Queue Enroll User commands for all eligible users for a given device."""
+    frappe.only_for("System Manager")
     from biometric_integration.biometric_integration.doctype.attendance_device.attendance_device import (
         _enqueue_initial_enrollments,
     )
@@ -116,6 +119,7 @@ def enqueue_all_enrollments(device_id: str) -> str:
 @frappe.whitelist()
 def enqueue_user_enrollments(user_id: str) -> str:
     """Queue Enroll User commands for all assigned devices of a user."""
+    frappe.only_for("System Manager")
     from biometric_integration.biometric_integration.doctype.attendance_device_user.attendance_device_user import (
         _get_user_devices,
     )
@@ -136,6 +140,13 @@ def enqueue_user_enrollments(user_id: str) -> str:
 @frappe.whitelist()
 def create_device_command(device_id: str, command_type: str) -> str:
     """Create and return the name of a new Attendance Device Command."""
+    frappe.only_for("System Manager")
+    ALLOWED = {
+        "Get Enroll Data", "Enroll User", "Delete User", "Update User",
+        "Sync User List", "Restart Device", "Unlock Door", "Set Device Time",
+    }
+    if command_type not in ALLOWED:
+        frappe.throw(f"Unsupported command type: {command_type}")
     brand = frappe.db.get_value("Attendance Device", device_id, "brand")
     if not brand:
         frappe.throw(f"Device not found: {device_id}")
@@ -156,6 +167,7 @@ def create_repull_command(device_id: str, start_time: str, end_time: str | None 
     The device re-uploads its stored attendance logs for [start_time, end_time];
     they flow through the normal checkin pipeline (duplicates are ignored).
     """
+    frappe.only_for("System Manager")
     brand = frappe.db.get_value("Attendance Device", device_id, "brand")
     if not brand:
         frappe.throw(f"Device not found: {device_id}")
@@ -194,6 +206,7 @@ def get_command_status(cmd_name: str) -> dict:
 @frappe.whitelist()
 def enqueue_user_deletions(user_id: str) -> str:
     """Queue Delete User commands for all assigned devices of a user."""
+    frappe.only_for("System Manager")
     from biometric_integration.biometric_integration.doctype.attendance_device_user.attendance_device_user import (
         _get_user_devices,
     )
