@@ -750,8 +750,17 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
         device_aware = naive_ts.replace(tzinfo=ZoneInfo(device_tz_name))
         site_aware = device_aware.astimezone(ZoneInfo(site_tz_name))
         return site_aware.replace(tzinfo=None)  # strip tzinfo — Frappe stores naive datetimes
-    except Exception:
-        return naive_ts  # on any error, fall back to as-is
+    except Exception as exc:
+        # A typo'd device_timezone would silently shift every punch by the
+        # offset — surface it (once per device per day, punches are frequent).
+        warn_key = f"biometric:tz_warned:{sn}"
+        if not frappe.cache.get_value(warn_key):
+            frappe.cache.set_value(warn_key, "1", expires_in_sec=86400)
+            frappe.log_error(
+                title="Device timezone conversion failed",
+                message=f"device={sn} device_timezone={device_tz_name!r}: {exc} — storing timestamps unconverted",
+            )
+        return naive_ts  # fall back to as-is
 
 
 def _parse_device_kv(body: str) -> dict:

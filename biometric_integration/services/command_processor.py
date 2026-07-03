@@ -281,7 +281,15 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
 
 
 def _ebkn(cmd_doc: Any, user_doc: Any) -> Optional[dict]:
-    uid = f"{int(user_doc.user_id):0>8}"
+    # EBKN user ids are numeric, zero-padded to 8. Attendance Device User is
+    # shared with ZKTeco where alphanumeric PINs occur — fail with a clear
+    # message instead of an opaque int() ValueError.
+    raw_pin = str(user_doc.user_id or "").strip()
+    if not raw_pin.isdigit():
+        raise ValueError(
+            f"EBKN commands need a numeric user id; user {user_doc.name} has {raw_pin!r}"
+        )
+    uid = raw_pin.zfill(8)
 
     if cmd_doc.command_type == "Delete User":
         return {
@@ -300,6 +308,11 @@ def _ebkn(cmd_doc: Any, user_doc: Any) -> Optional[dict]:
     if cmd_doc.command_type == "Update User":
         # SET_USER_PROFILE: name + privilege only, no biometrics required.
         # Registers the user on the device so they can clock in with their PIN.
+        # NOTE (needs hardware verification): SET_USER_PROFILE is not in the
+        # BS_FkWeb command table — the documented equivalents are SET_USER_NAME
+        # ({user_id, user_name}) and SET_USER_PRIVILEGE ({user_id,
+        # user_privilege: "USER"|...}). If a device leaves this Pending forever
+        # (never sends send_cmd_result), switch to those.
         return {
             "trans_id": cmd_doc.name,
             "cmd_code": "SET_USER_PROFILE",

@@ -70,19 +70,28 @@ class EBKNAdapter(AbstractDeviceAdapter):
         if not request_code or not dev_id:
             return _build_response("ERROR", trans_id=trans_id)
 
-        blk_no = int(blk_no_raw) if blk_no_raw is not None else None
+        try:
+            blk_no = int(blk_no_raw) if blk_no_raw is not None else None
+        except (TypeError, ValueError):
+            return _build_response("ERROR", trans_id=trans_id)
         raw = self.raw_body
 
         # --- Block sequencing ---
+        # The last-seen block number is tracked alongside the buffer so a lost or
+        # duplicated block, or a buffer that expired mid-transfer (5-min TTL),
+        # is answered ERROR — the device retransmits the sequence — instead of
+        # silently assembling a corrupted buffer from whatever survived.
         if blk_no == 1:
             _cache_start(dev_id, request_code)
-            _cache_append(dev_id, request_code, raw)
+            _cache_append(dev_id, request_code, raw, blk_no=1)
             return _build_response("OK", trans_id=trans_id)
         if blk_no is not None and blk_no > 1:
-            _cache_append(dev_id, request_code, raw)
+            if not _cache_append(dev_id, request_code, raw, blk_no=blk_no):
+                return _build_response("ERROR", trans_id=trans_id)
             return _build_response("OK", trans_id=trans_id)
         if blk_no == 0:
-            _cache_append(dev_id, request_code, raw)
+            if not _cache_append(dev_id, request_code, raw, blk_no=0):
+                return _build_response("ERROR", trans_id=trans_id)
             full_payload = _cache_read_clear(dev_id, request_code)
             if full_payload is None:
                 return _build_response("ERROR", trans_id=trans_id)
@@ -155,10 +164,28 @@ def _handle_realtime_glog(payload: dict, ctx: dict) -> Reply:
         ts = _localize_device_timestamp(parsed_time, dev_id)
         log_type = "IN" if payload.get("io_mode") == 1 else "OUT"
 
-        # EBKN may send verify_type: 1=FP, 4=Face, 15=Card, etc.
-        _EBKN_VERIFY = {1: "Fingerprint", 4: "Face", 15: "Card", 6: "Password"}
-        verify_raw = payload.get("verify_type") or payload.get("verifyType") or payload.get("auth_type")
-        biometric_method = _EBKN_VERIFY.get(int(verify_raw), "Other") if verify_raw is not None else None
+        # Per spec the field is verify_mode: a string or array of strings, e.g.
+        # ["FP","PASSWORD"]. Some firmware sends a numeric verify_type instead
+        # (1=FP, 4=Face, 15=Card, 6=Password) — kept as fallback. Parsing is
+        # isolated so a surprising value can never abort the checkin itself.
+        biometric_method = None
+        try:
+            vm = payload.get("verify_mode")
+            if isinstance(vm, list) and vm:
+                vm = vm[0]
+            if isinstance(vm, str) and vm.strip():
+                biometric_method = {
+                    "FP": "Fingerprint", "FINGER": "Fingerprint",
+                    "FACE": "Face", "PASSWORD": "Password",
+                    "IDCARD": "Card", "CARD": "Card",
+                }.get(vm.strip().upper(), "Other")
+            else:
+                verify_raw = payload.get("verify_type") or payload.get("verifyType") or payload.get("auth_type")
+                if verify_raw is not None:
+                    biometric_method = {1: "Fingerprint", 4: "Face", 15: "Card", 6: "Password"}.get(
+                        int(verify_raw), "Other")
+        except Exception:
+            biometric_method = None
 
         create_employee_checkin(
             device_pin=user_id,
@@ -222,11 +249,15 @@ def _handle_send_cmd_result(payload: dict, ctx: dict) -> Reply:
         cmd_doc.save(ignore_permissions=True)
         frappe.db.commit()
 
-        # If this was a Get Enroll Data command returning the final blob
+        # If this was a Get Enroll Data command returning the final blob.
+        # blk_no None = single-block result; "0" = final block of a chunked
+        # transfer (full_payload is the reassembled buffer) — templates with a
+        # face or several fingers routinely exceed one ~10KB block, so missing
+        # the "0" case silently dropped every large enrollment.
         if (
             cmd_doc.command_type == "Get Enroll Data"
             and cmd_return_code == "OK"
-            and blk_no_raw is None
+            and (blk_no_raw is None or blk_no_raw == "0")
         ):
             _store_enrollment_blob(
                 dev_id=dev_id,
@@ -242,13 +273,18 @@ def _handle_send_cmd_result(payload: dict, ctx: dict) -> Reply:
         ):
             _process_ebkn_user_id_list(dev_id, payload)
     except frappe.DoesNotExistError:
+        # Unknown/deleted command — ack OK so the device drops the result
+        # instead of retrying forever.
         frappe.log_error(
             title="EBKN send_cmd_result: command not found",
             message=f"trans_id={trans_id} dev_id={dev_id}",
         )
     except Exception as exc:
+        # Transient failure on our side (e.g. DB error) — answer ERROR so the
+        # device re-sends the result; per spec OK means "received AND saved".
         frappe.db.rollback()
         frappe.log_error(title="EBKN send_cmd_result Error", message=str(exc))
+        return _fail_bytes(), 200, {"response_code": "ERROR", "trans_id": str(trans_id)}
 
     return _ok_bytes(), 200, _resp_headers(trans_id=trans_id)
 
@@ -328,21 +364,51 @@ def _cache_key(dev_id: str, request_code: str) -> str:
     return f"ebkn_block:{dev_id}:{request_code}"
 
 
+def _cache_seq_key(dev_id: str, request_code: str) -> str:
+    return f"ebkn_block:{dev_id}:{request_code}:last"
+
+
 def _cache_start(dev_id: str, request_code: str) -> None:
     """Clear any previous partial data for this sequence."""
     frappe.cache.delete_value(_cache_key(dev_id, request_code))
+    frappe.cache.delete_value(_cache_seq_key(dev_id, request_code))
 
 
-def _cache_append(dev_id: str, request_code: str, data: bytes) -> None:
+def _cache_append(dev_id: str, request_code: str, data: bytes, blk_no: int | None = None) -> bool:
+    """Append a block to the buffer, enforcing sequence continuity.
+
+    Returns False (and drops the partial buffer) when the block is out of order
+    or the buffer/sequence marker expired mid-transfer — the caller answers
+    ERROR so the device retransmits from block 1.
+    """
     key = _cache_key(dev_id, request_code)
+    seq_key = _cache_seq_key(dev_id, request_code)
+
+    if blk_no is not None and blk_no != 1:
+        last = frappe.cache.get_value(seq_key)
+        in_order = last is not None and (
+            blk_no == int(last) + 1 or (blk_no == 0 and int(last) >= 1)
+        )
+        if not in_order:
+            frappe.cache.delete_value(key)
+            frappe.cache.delete_value(seq_key)
+            maybe_log(dev_id, "Error", "IN",
+                      f"EBKN block sequence broken for {request_code}: "
+                      f"got blk_no={blk_no} after {last!r} — buffer dropped, device will retransmit")
+            return False
+
     existing: bytes = frappe.cache.get_value(key) or b""
     frappe.cache.set_value(key, existing + data, expires_in_sec=300)
+    if blk_no is not None and blk_no >= 1:
+        frappe.cache.set_value(seq_key, blk_no, expires_in_sec=300)
+    return True
 
 
 def _cache_read_clear(dev_id: str, request_code: str) -> bytes | None:
     key = _cache_key(dev_id, request_code)
     data = frappe.cache.get_value(key)
     frappe.cache.delete_value(key)
+    frappe.cache.delete_value(_cache_seq_key(dev_id, request_code))
     return data
 
 
@@ -387,6 +453,21 @@ def _extract_json_and_bins(raw: bytes) -> Tuple[dict, Dict[str, bytes]]:
     if not placeholders:
         return meta, {}
 
+    # BIN_n placeholders are collected in JSON traversal order — sort by their
+    # numeric index so segments map to the right placeholder.
+    def _bin_index(ph: str) -> int:
+        try:
+            return int(ph.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return 0
+
+    placeholders.sort(key=_bin_index)
+
+    # LIMITATION: with multiple BINs the payload carries no per-BIN length, so
+    # the blob area is split into equal parts — only exact for same-size blobs.
+    # Currently harmless: enrollment blobs are stored as the raw full payload
+    # and only scalar JSON fields are consumed. Single-BIN payloads (the common
+    # case, e.g. user_id_array) are always exact.
     seg_size = len(remaining) // len(placeholders)
     stream = BytesIO(remaining)
     segments: Dict[str, bytes] = {}
@@ -435,7 +516,17 @@ def _build_response(response_code: str, trans_id: str = "0") -> Response:
 
 
 def _format_cmd_body(raw: typing.Union[str, bytes, None]) -> bytes:
-    if raw is None:
+    """Frame an outbound command body.
+
+    NOTE (needs hardware verification): the BS_FkWeb doc specifies bare JSON
+    bodies with no framing, but this length-prefix + NUL framing for str bodies
+    predates this refactor and presumably came from live-device behaviour.
+    Inconsistency: bytes bodies (Enroll User blob replay) are sent unframed and
+    empty-string bodies produce a 5-byte frame instead of an empty body. Verify
+    against a live EBKN device before unifying — at most one convention can be
+    right for the same firmware.
+    """
+    if raw is None or raw == "":
         return b""
     if isinstance(raw, bytes):
         return raw
@@ -461,16 +552,43 @@ def _get_header(headers, *names: str) -> str | None:
 def _process_ebkn_user_id_list(dev_id: str, payload: dict) -> None:
     """Process GET_USER_ID_LIST response: create stub users and queue Get Enroll Data.
 
-    EBKN returns a list of user IDs (as ints or strings) under key "user_id_list"
-    or similar — the exact key name may vary by firmware. We try common variants.
+    Per the BS_FkWeb spec the result body is
+      {"user_id_count": <n>, "one_user_id_size": <s>, "user_id_array": <BIN_1>}
+    where BIN_1 (base64 by the time it reaches us, via _inline_bins) is a packed
+    array of n fixed-size records, each a null-padded ASCII user id.
+    Some firmware variants send a plain JSON list instead, so those keys are
+    kept as fallbacks.
     """
     from biometric_integration.services.checkin import _ensure_device_user_synced
+
     user_ids = (
         payload.get("user_id_list")
         or payload.get("userIdList")
         or payload.get("user_ids")
-        or []
     )
+
+    if user_ids is None and payload.get("user_id_array"):
+        try:
+            raw = base64.b64decode(payload["user_id_array"])
+            size = int(payload.get("one_user_id_size") or 0)
+            count = int(payload.get("user_id_count") or 0)
+            if size > 0:
+                if not count:
+                    count = len(raw) // size
+                user_ids = []
+                for i in range(count):
+                    chunk = raw[i * size:(i + 1) * size]
+                    uid = chunk.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
+                    if uid:
+                        user_ids.append(uid)
+        except Exception as exc:
+            frappe.log_error(
+                title="EBKN GET_USER_ID_LIST: user_id_array parse failed",
+                message=f"dev_id={dev_id}: {exc}",
+            )
+            return
+
+    user_ids = user_ids or []
     if not isinstance(user_ids, list):
         frappe.log_error(
             title="EBKN GET_USER_ID_LIST: unexpected payload format",
@@ -515,7 +633,16 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
         device_aware = naive_ts.replace(tzinfo=ZoneInfo(device_tz_name))
         site_aware = device_aware.astimezone(ZoneInfo(site_tz_name))
         return site_aware.replace(tzinfo=None)
-    except Exception:
+    except Exception as exc:
+        # A typo'd device_timezone would silently shift every punch by the
+        # offset — surface it (once per device per day, punches are frequent).
+        warn_key = f"biometric:tz_warned:{sn}"
+        if not frappe.cache.get_value(warn_key):
+            frappe.cache.set_value(warn_key, "1", expires_in_sec=86400)
+            frappe.log_error(
+                title="Device timezone conversion failed",
+                message=f"device={sn} device_timezone={device_tz_name!r}: {exc} — storing timestamps unconverted",
+            )
         return naive_ts
 
 

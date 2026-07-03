@@ -39,6 +39,15 @@ def create_employee_checkin(
                 return False
             # Proceed with blank employee if setting allows it
 
+        # Duplicate pre-check: devices re-send logs after a missed ack, and the
+        # fallback below matches HRMS's English error message, which is fragile
+        # (rewording/translation would turn every duplicate into a device retry
+        # loop). An indexed existence check is cheap and locale-proof.
+        if employee_id and frappe.db.exists(
+            "Employee Checkin", {"employee": employee_id, "time": timestamp}
+        ):
+            return True  # duplicate — treat as success
+
         checkin = frappe.new_doc("Employee Checkin")
         checkin.employee = employee_id
         # log_type intentionally left empty: the device IN/OUT flag is unreliable,
