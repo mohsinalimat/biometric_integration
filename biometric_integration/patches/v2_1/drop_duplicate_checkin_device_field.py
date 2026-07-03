@@ -17,3 +17,8 @@ def execute():
     if frappe.db.exists("Custom Field", name):
         frappe.delete_doc("Custom Field", name, ignore_permissions=True, force=True)
         frappe.db.commit()
+    # Frappe deletes the Custom Field but never auto-drops the physical column
+    # (data safety). Drop the now-orphaned column explicitly.
+    if frappe.db.has_column("Employee Checkin", "attendance_device"):
+        frappe.db.sql_ddl("ALTER TABLE `tabEmployee Checkin` DROP COLUMN `attendance_device`")
+        frappe.db.commit()
