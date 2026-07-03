@@ -174,18 +174,17 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         return f"C:{cmd_id}:DATA DELETE USERINFO PIN={pin}"
 
     if cmd_doc.command_type == "Get Enroll Data":
-        # Pull the profile plus every biometric template via the unified `biodata`
-        # table. The filter MUST include Type (ADMS requirement), and a query for a
-        # modality the device lacks simply returns nothing, so we sweep all supported
-        # types: 1=FP, 2=NIR face, 8=Palm vein, 9=Visible face. Unlike the legacy
-        # FPTMP query, biodata responses carry majorver/format — the algorithm
-        # metadata needed to re-enroll the template on a different device model.
-        lines = [f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}"]
-        for bio_type in (1, 2, 8, 9):
-            lines.append(
-                f"C:{cmd_id}:DATA QUERY tablename=biodata,fielddesc=*,filter=Type={bio_type}\tPin={pin}"
-            )
-        return "\n".join(lines)
+        # Classic ADMS dialect — widest firmware support (verified against the live
+        # ZKTeco fleet: USERINFO/FPTMP return 0, whereas the newer unified
+        # `DATA QUERY tablename=biodata,...` form is rejected with Return=-1004).
+        # FPTMP returns each fingerprint as an `FP PIN=.. FID=.. Size=.. TMP=..`
+        # record, which carries everything FINGERTMP needs to re-enroll it.
+        # Newer multi-modal firmware answers the same queries; if it instead pushes
+        # unified `biodata` records, the ingest path (adapters/zkteco.py) parses those.
+        return "\n".join([
+            f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}",
+            f"C:{cmd_id}:DATA QUERY FPTMP PIN={pin}",
+        ])
 
     if cmd_doc.command_type == "Update User":
         return f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd=\tCard=0"
@@ -227,23 +226,38 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
                 f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd={passwd}\tCard={card}",
             ]
             for bio in enroll.get("biometrics", []):
-                lines.append(
-                    # ZKTeco ADMS "DATA UPDATE biodata" — field names are
-                    # lowercase and it takes `format` (0=ZK), NOT `Size`
-                    # (per PUSH SDK doc, Unified Template). Capitalised names
-                    # or a Size field make the device reject with Return=-1.
-                    f"C:{cmd_id}:DATA UPDATE biodata"
-                    f"\tpin={pin}"
-                    f"\tno={bio['no']}"
-                    f"\tindex={bio.get('index', 0)}"
-                    f"\tvalid={bio.get('valid', 1)}"
-                    f"\tduress={bio.get('duress', 0)}"
-                    f"\ttype={bio['type']}"
-                    f"\tmajorver={bio.get('majorver', 0)}"
-                    f"\tminorver={bio.get('minorver', 0)}"
-                    f"\tformat={bio.get('format', 0)}"
-                    f"\ttmp={bio['tmp']}"
-                )
+                btype = bio.get("type", 1)
+                if btype == 1:
+                    # Fingerprint — classic FINGERTMP command. Verified Return=0 on
+                    # the live fleet; supported by legacy firmware that rejects the
+                    # unified `DATA UPDATE biodata` (Return=-1) and by modern FP
+                    # firmware (kept for backward compatibility). Needs only
+                    # FID/Size/Valid/TMP, all captured by the FPTMP pull.
+                    lines.append(
+                        f"C:{cmd_id}:DATA UPDATE FINGERTMP"
+                        f"\tPIN={pin}"
+                        f"\tFID={bio.get('no', 0)}"
+                        f"\tSize={bio.get('size', 0)}"
+                        f"\tValid={bio.get('valid', 1)}"
+                        f"\tTMP={bio['tmp']}"
+                    )
+                else:
+                    # Face / palm / other modalities exist only on newer firmware,
+                    # which uses the unified template (lowercase fields + `format`,
+                    # 0=ZK; capitalised names or a `Size` field → Return=-1).
+                    lines.append(
+                        f"C:{cmd_id}:DATA UPDATE biodata"
+                        f"\tpin={pin}"
+                        f"\tno={bio['no']}"
+                        f"\tindex={bio.get('index', 0)}"
+                        f"\tvalid={bio.get('valid', 1)}"
+                        f"\tduress={bio.get('duress', 0)}"
+                        f"\ttype={btype}"
+                        f"\tmajorver={bio.get('majorver', 0)}"
+                        f"\tminorver={bio.get('minorver', 0)}"
+                        f"\tformat={bio.get('format', 0)}"
+                        f"\ttmp={bio['tmp']}"
+                    )
             return "\n".join(lines)
         elif enroll and "fid" in enroll:
             # Intermediate format — single FP JSON {"fid", "size", "tmp"}
