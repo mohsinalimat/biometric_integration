@@ -694,7 +694,8 @@ def _store_ebkn_capabilities(dev_id: str, payload: dict) -> None:
     updates: dict = {}
     fk_name = payload.get("fk_name")
     if fk_name:
-        updates["mac_address"] = str(fk_name)
+        # fk_name is the device's model/product name — NOT a MAC address.
+        updates["device_model"] = str(fk_name)
 
     fk_info = payload.get("fk_info") or {}
     if isinstance(fk_info, dict):

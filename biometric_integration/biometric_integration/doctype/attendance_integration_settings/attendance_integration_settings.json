@@ -5,7 +5,7 @@
  "engine": "InnoDB",
  "field_order": [
   "section_employee",
-  "do_not_skip_unknown_employee_checkin",
+  "create_checkin_for_unknown_pin",
   "column_break_ziga",
   "push_timezone_to_device",
   "section_commands",
@@ -37,7 +37,7 @@
   {
    "default": "0",
    "description": "If enabled, creates an Employee Checkin with a blank employee link when the device PIN does not match any employee's Attendance Device ID",
-   "fieldname": "do_not_skip_unknown_employee_checkin",
+   "fieldname": "create_checkin_for_unknown_pin",
    "fieldtype": "Check",
    "label": "Create Check-in for Unknown Employees"
   },

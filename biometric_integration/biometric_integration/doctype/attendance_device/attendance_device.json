@@ -21,6 +21,7 @@
   "device_port",
   "section_capabilities",
   "firmware_version",
+  "device_model",
   "mac_address",
   "supported_biometrics",
   "column_break_cap",
@@ -130,6 +131,13 @@
    "fieldtype": "Data",
    "label": "Firmware Version",
    "read_only": 1
+  },
+  {
+   "fieldname": "device_model",
+   "fieldtype": "Data",
+   "label": "Device Model",
+   "read_only": 1,
+   "description": "Model / product name reported by the device (EBKN fk_name)."
   },
   {
    "fieldname": "mac_address",

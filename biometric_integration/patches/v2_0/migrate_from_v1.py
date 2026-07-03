@@ -204,7 +204,7 @@ def _migrate_settings(errors: list):
         settings = frappe.get_single("Attendance Integration Settings")
         settings.maximum_command_attempts = old.get("maximum_no_of_attempts_for_commands") or 3
         settings.force_close_after_days = old.get("force_close_after") or 30
-        settings.do_not_skip_unknown_employee_checkin = old.get("do_not_skip_unknown_employee_checkin", 0)
+        settings.create_checkin_for_unknown_pin = old.get("do_not_skip_unknown_employee_checkin", 0)
         settings.save(ignore_permissions=True)
     except Exception:
         msg = frappe.get_traceback()

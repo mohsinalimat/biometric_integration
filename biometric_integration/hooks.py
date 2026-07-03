@@ -46,7 +46,6 @@ fixtures = [
         "dt": "Custom Field",
         "filters": [["name", "in", [
             "Employee Checkin-biometric_method",
-            "Employee Checkin-attendance_device",
             "Employee-create_user_in_device",
             "Employee-biometric_device",
         ]]],

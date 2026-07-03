@@ -34,7 +34,7 @@ def create_employee_checkin(
 
         if not employee_id:
             settings = frappe.get_cached_doc("Attendance Integration Settings")
-            if not settings.do_not_skip_unknown_employee_checkin:
+            if not settings.create_checkin_for_unknown_pin:
                 _ensure_device_user_synced(str(device_pin), device_id)
                 return False
             # Proceed with blank employee if setting allows it
@@ -54,11 +54,11 @@ def create_employee_checkin(
         # and attendance is computed as first-in/last-out span (see the
         # Checkin -> Attendance server script), so we do not record it.
         checkin.time = timestamp
+        # device_id is a Link to Attendance Device (via property setter) — the single
+        # source of truth for the originating device on the checkin.
         checkin.device_id = device_id
         if biometric_method:
             checkin.biometric_method = biometric_method
-        if device_id:
-            checkin.attendance_device = device_id
 
         checkin.insert(
             ignore_mandatory=not bool(employee_id),
