@@ -166,6 +166,26 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         _finish(cmd_doc, "Success", f"Sent: DATA QUERY ATTLOG StartTime={start_s} EndTime={end_s}")
         return f"C:{cmd_doc.name}:DATA QUERY ATTLOG StartTime={start_s}\tEndTime={end_s}"
 
+    if cmd_doc.command_type == "Refresh Device Info":
+        # Read-only capability probe. ZKTeco answers a `GET OPTIONS <keys>` by
+        # POSTing the requested option values back (to /iclock/cdata?table=options
+        # or /iclock/querydata?type=options depending on firmware); both paths land
+        # in _store_device_capabilities, which updates fp_version / firmware_version
+        # / supported_biometrics on the device. Safe against a live device — it does
+        # NOT touch enrolled users or templates. Done-on-send: the option upload is
+        # asynchronous and (on most firmware) carries no cmdid to correlate back, so
+        # we can't tie the eventual values to this command row.
+        brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
+        if brand != "ZKTeco":
+            _finish(cmd_doc, "Failed", "Refresh Device Info is only supported for ZKTeco devices.")
+            return None
+        _finish(cmd_doc, "Success",
+                "Sent: GET OPTIONS (device reports fp/firmware/bio capabilities asynchronously)")
+        # Request exactly the option keys _store_device_capabilities knows how to
+        # parse. ~ prefix marks read-only/optional options in the ADMS spec.
+        keys = "~ZKFPVersion,~ZKFaceVersion,FirmVer,~DeviceName,MAC,~MaxUserCount,FaceFunOn,FingerFunOn,FvFunOn,PvFunOn"
+        return f"C:{cmd_doc.name}:GET OPTIONS {keys}"
+
     if cmd_doc.command_type == "Pull From Device":
         # ZKTeco resync: with OPERLOGStamp=0 in the handshake, a CHECK makes the
         # device re-upload its full user table + every locally-enrolled fingerprint
@@ -262,36 +282,48 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
             # Current format — full JSON with all biometrics + credentials
             card = enroll.get("card", "0")
             passwd = enroll.get("passwd", "")
-            # Cross-model guard: a fingerprint template only matches on a device with
-            # the same FP algorithm version. If the target device's fp_version is known
-            # and differs from a template's majorver, surface it (the device would
-            # otherwise silently reject the biodata line with Return=-1).
-            target_fp = frappe.db.get_value("Attendance Device", cmd_doc.attendance_device, "fp_version")
-            if target_fp:
-                for bio in enroll.get("biometrics", []):
-                    mv = bio.get("majorver", 0)
-                    if bio.get("type") == 1 and mv and int(mv) != int(target_fp):
-                        frappe.log_error(
-                            title="Biometric Enrollment Algorithm Mismatch",
-                            message=(
-                                f"User {user_doc.name} (PIN {pin}): fingerprint template "
-                                f"majorver={mv} but target device {cmd_doc.attendance_device} "
-                                f"fp_version={target_fp}. Template may be rejected — re-enroll "
-                                f"the finger directly on this device model."
-                            ),
-                        )
-                        break
+            # Version-match gate: a fingerprint template only matches on a device
+            # whose FP algorithm version equals the version it was captured on.
+            # target_fp = manual override if set, else the auto-detected version.
+            dev = frappe.db.get_value(
+                "Attendance Device", cmd_doc.attendance_device,
+                ["fp_version", "fp_version_override"], as_dict=True,
+            ) or {}
+            target_fp = cint(dev.get("fp_version_override")) or cint(dev.get("fp_version"))
+            _s = frappe.get_cached_doc("Attendance Integration Settings")
+            _raw = _s.get("enforce_fp_version_match")
+            enforce = 1 if _raw is None else cint(_raw)  # default ON when unset
+
             lines = [
                 f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd={passwd}\tCard={card}",
             ]
+            skipped = []
             for bio in enroll.get("biometrics", []):
                 btype = bio.get("type", 1)
                 if btype == 1:
-                    # Fingerprint — classic FINGERTMP command. Verified Return=0 on
-                    # the live fleet; supported by legacy firmware that rejects the
-                    # unified `DATA UPDATE biodata` (Return=-1) and by modern FP
-                    # firmware (kept for backward compatibility). Needs only
-                    # FID/Size/Valid/TMP, all captured by the FPTMP pull.
+                    # Fingerprint algorithm-version check. When the target version is
+                    # known and the template was captured on a different version, the
+                    # device would silently reject the template (Return=-1). If the
+                    # gate is enforced, skip pushing it (user is still registered and
+                    # can enrol locally); otherwise push anyway but warn.
+                    mv = cint(bio.get("majorver", 0))
+                    if target_fp and mv and mv != target_fp:
+                        if enforce:
+                            skipped.append(f"FID={bio.get('no', 0)} (v{mv}≠v{target_fp})")
+                            continue
+                        frappe.log_error(
+                            title="Biometric Enrollment Algorithm Mismatch (pushed anyway)",
+                            message=(
+                                f"User {user_doc.name} (PIN {pin}): fingerprint template "
+                                f"majorver={mv} but target device {cmd_doc.attendance_device} "
+                                f"fp_version={target_fp}. Enforcement OFF — pushing; device "
+                                f"may reject with Return=-1."
+                            ),
+                        )
+                    # Classic FINGERTMP command. Verified Return=0 on the live fleet;
+                    # supported by legacy firmware that rejects the unified
+                    # `DATA UPDATE biodata` (Return=-1) and by modern FP firmware.
+                    # Needs only FID/Size/Valid/TMP, all captured by the FINGERTMP pull.
                     lines.append(
                         f"C:{cmd_id}:DATA UPDATE FINGERTMP"
                         f"\tPIN={pin}"
@@ -317,6 +349,22 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
                         f"\tformat={bio.get('format', 0)}"
                         f"\ttmp={bio['tmp']}"
                     )
+            if skipped:
+                # Record why fingerprints were withheld so the operator isn't left
+                # wondering why a "successful" enroll can't fingerprint-match. The
+                # device ack later appends its own result to this note.
+                msg = (
+                    f"Skipped {len(skipped)} fingerprint(s) on version mismatch "
+                    f"(device fp_version={target_fp}): {', '.join(skipped)}. "
+                    f"User registered — enrol the finger directly on this device."
+                )
+                frappe.log_error(title="Biometric Enrollment Version Gate", message=msg)
+                try:
+                    frappe.db.set_value("Attendance Device Command", cmd_id,
+                                        "device_response", msg, update_modified=False)
+                    frappe.db.commit()
+                except Exception:
+                    pass
             return "\n".join(lines)
         elif enroll and "fid" in enroll:
             # Intermediate format — single FP JSON {"fid", "size", "tmp"}

@@ -202,6 +202,42 @@ frappe.ui.form.on('Attendance Device', {
 			}, __('Commands'));
 		}
 
+		if (frm.doc.brand === 'ZKTeco') {
+			frm.add_custom_button(__('Refresh Device Info'), () => {
+				const d = new frappe.ui.Dialog({
+					title: __('Refresh Device Info — {0}', [frm.doc.device_name || frm.doc.name]),
+					fields: [{ fieldname: 'status_html', fieldtype: 'HTML' }],
+				});
+				d.get_field('status_html').$wrapper.html(
+					`<div class="text-center py-3">
+						<div class="spinner-border text-primary mb-2" role="status" style="width:2rem;height:2rem;"></div>
+						<div class="text-muted">${__('Queueing capability probe…')}</div>
+					</div>`
+				);
+				d.show();
+				frappe.call({
+					method: 'biometric_integration.api.create_device_command',
+					args: { device_id: frm.doc.name, command_type: 'Refresh Device Info' },
+					callback(r) {
+						if (!r.message) {
+							d.get_field('status_html').$wrapper.html(
+								`<div class="text-center py-3 text-danger"><b>${__('Failed to queue command')}</b></div>`
+							);
+							return;
+						}
+						d.get_field('status_html').$wrapper.html(
+							`<div class="text-center py-3">
+								<div class="text-primary mb-1" style="font-size:2rem;">&#8505;</div>
+								<b>${__('Refresh Device Info command sent')}</b>
+								<div class="text-muted small mt-2">${__('On its next poll the device reports its firmware and fingerprint algorithm version. Reload this device after a few seconds to see the Capabilities fields update.')}</div>
+							</div>`
+						);
+						setTimeout(() => { d.hide(); frm.reload_doc(); }, 4000);
+					},
+				});
+			}, __('Commands'));
+		}
+
 		frm.add_custom_button(__('View Device Logs'), () => {
 			frappe.set_route('List', 'Attendance Device Log', {
 				attendance_device: frm.doc.name,

@@ -334,6 +334,27 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                     pass
             return self.text(f"biophoto={n}")
 
+        # Device capability probe response (Refresh Device Info → GET OPTIONS).
+        # Firmware differs on how it answers: some POST options here via querydata
+        # (type=options / tablename=options), others via /iclock/cdata?table=options
+        # (handled in _upload). Parse both into the device's capability fields.
+        if table.lower() == "options" or args.get("type") == "options":
+            body_str = self.raw_body.decode("utf-8", errors="ignore")
+            _store_device_capabilities(sn0, body_str)
+            if cmd_id:
+                try:
+                    frappe.db.set_value("Attendance Device Command", cmd_id, {
+                        "status": "Success",
+                        "closed_on": frappe.utils.now_datetime(),
+                        "device_response": f"Options reported: {body_str.strip()[:500]}",
+                    })
+                    frappe.db.commit()
+                except Exception:
+                    pass
+            maybe_log(sn0 or "unknown", "Handshake", "IN",
+                      f"Device options reported SN={sn0}", raw_data=body_str)
+            return self.text("OK")
+
         if table != "user":
             return self.text(f"{table}={count_str}")
 
@@ -837,6 +858,11 @@ def _store_device_capabilities(sn: str, body: str) -> None:
     fw = kv.get("FWVersion") or kv.get("FirmVer")
     if fw:
         updates["firmware_version"] = fw
+    # Model name — DeviceName is the human model string (e.g. "MB360"); DeviceType
+    # ("acc"/"att") is a generic class, so only fall back to it if nothing better.
+    model = kv.get("DeviceName") or kv.get("MachineType")
+    if model:
+        updates["device_model"] = model
     if kv.get("MAC"):
         updates["mac_address"] = kv["MAC"]
     if kv.get("MaxUserCount"):

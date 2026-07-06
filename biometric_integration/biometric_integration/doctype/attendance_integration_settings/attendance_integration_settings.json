@@ -19,6 +19,8 @@
   "column_break_zkteco_sync",
   "trans_times",
   "trans_interval",
+  "section_bio_sync",
+  "enforce_fp_version_match",
   "section_endpoints",
   "zkteco_server_address",
   "ebkn_server_address",
@@ -119,6 +121,18 @@
    "fieldtype": "Int",
    "label": "Upload Interval (minutes)",
    "non_negative": 1
+  },
+  {
+   "fieldname": "section_bio_sync",
+   "fieldtype": "Section Break",
+   "label": "Biometric Sync Safety"
+  },
+  {
+   "default": "1",
+   "description": "A fingerprint template only matches on a device whose fingerprint algorithm version equals the version it was captured on. When enabled, Enroll User skips (does not push) any fingerprint whose algorithm version differs from the target device's version, and logs it — the user is still registered and can enrol the finger locally. Disable to push anyway (the device usually rejects the mismatched template with Return=-1).",
+   "fieldname": "enforce_fp_version_match",
+   "fieldtype": "Check",
+   "label": "Enforce Fingerprint Version Match"
   },
   {
    "description": "Configure your biometric devices to push data to these URLs",

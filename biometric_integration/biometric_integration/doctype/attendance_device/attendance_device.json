@@ -27,6 +27,7 @@
   "column_break_cap",
   "max_users",
   "fp_version",
+  "fp_version_override",
   "device_timezone",
   "section_assignment",
   "company",
@@ -167,7 +168,13 @@
    "fieldtype": "Int",
    "label": "Fingerprint Algorithm Version",
    "read_only": 1,
-   "description": "ZKTeco FP algorithm version (e.g. 10). Templates only transfer between devices sharing the same version — populated automatically from device options."
+   "description": "ZKTeco FP algorithm version (e.g. 10). Templates only transfer between devices sharing the same version — populated automatically from device options (Refresh Device Info)."
+  },
+  {
+   "fieldname": "fp_version_override",
+   "fieldtype": "Int",
+   "label": "FP Version Override",
+   "description": "Set this only when the device cannot report its fingerprint algorithm version automatically. When set, it overrides the detected value for version-match gating during Enroll User. Leave 0 to use the auto-detected version."
   },
   {
    "fieldname": "device_timezone",
