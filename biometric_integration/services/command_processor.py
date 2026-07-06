@@ -263,6 +263,14 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         # plus OPERLOGStamp=0; this per-user query is a targeted supplement.)
         lines = [f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}"]
         lines += [f"C:{cmd_id}:DATA QUERY FINGERTMP PIN={pin}\tFID={fid}" for fid in range(10)]
+        # Newer firmware (fp_version >= 10, e.g. the ZAM70 v13 fleet) stores a
+        # LOCALLY-enrolled fingerprint in the unified BIODATA table, which the
+        # classic FINGERTMP sweep never surfaces (it returns Return=0 but empty).
+        # Also ask for BIODATA using the friendly `Type=<n>\tPIN=<pin>` form — the
+        # `tablename=biodata,filter=...` form returns Return=-1004 on this fleet.
+        # Classic devices reject this single line (-1004) harmlessly; v13 devices
+        # answer with the unified template (ingested by the biodata handlers).
+        lines.append(f"C:{cmd_id}:DATA QUERY BIODATA Type=1\tPIN={pin}")
         return "\n".join(lines)
 
     if cmd_doc.command_type == "Update User":

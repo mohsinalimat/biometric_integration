@@ -790,6 +790,15 @@ def _build_config_options(sn: str | None) -> str:
     error_delay = int(settings.device_error_delay or 30)
     trans_times = settings.trans_times or "00:00;14:05"
     trans_interval = int(settings.trans_interval or 1)
+    # Declare multi-bio support so newer (unified/hybrid) firmware will UPLOAD a
+    # locally-enrolled fingerprint as a BIODATA template — the only way to CAPTURE
+    # an on-device enrollment on fp_version >= 10 devices (classic FINGERTMP/CHECK
+    # never surface it). Echo the device's own reported capability bitmap when we
+    # have it; otherwise advertise fingerprint (type 1) so capture can bootstrap on
+    # devices whose caps we haven't read yet. Classic firmware ignores this option,
+    # so it's safe fleet-wide.
+    bio = (frappe.db.get_value("Attendance Device", sn, "supported_biometrics") if sn else None)
+    multibio = bio if (bio and ":" in bio) else "0:1:0:0:0:0:0:0:0:0"
     return (
         f"ATTLOGStamp={last_sync_id}\n"
         "OPERLOGStamp=0\n"
@@ -799,6 +808,7 @@ def _build_config_options(sn: str | None) -> str:
         f"TransTimes={trans_times}\n"
         f"TransInterval={trans_interval}\n"
         "TransFlag=TransData AttLog OpLog AttPhoto EnrollUser ChgUser EnrollFP ChgFP UserPic\n"
+        f"MultiBioDataSupport={multibio}\n"
         + (f"TimeZone={_get_device_tz_hours(sn)}\n" if settings.push_timezone_to_device else "")
         + "Realtime=1\n"
         "Encrypt=None\n"
