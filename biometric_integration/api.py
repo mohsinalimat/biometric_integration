@@ -144,6 +144,7 @@ def create_device_command(device_id: str, command_type: str) -> str:
     ALLOWED = {
         "Get Enroll Data", "Enroll User", "Delete User", "Update User",
         "Sync User List", "Restart Device", "Unlock Door", "Set Device Time",
+        "Pull From Device",
     }
     if command_type not in ALLOWED:
         frappe.throw(f"Unsupported command type: {command_type}")

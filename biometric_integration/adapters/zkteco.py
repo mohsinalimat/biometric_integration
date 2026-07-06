@@ -88,31 +88,17 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                       f"Handshake from unregistered device SN={sn} — rejected",
                       raw_data=self.raw_dump("ERROR: Device not registered."),
                       force=True)
-            return self.text("ERROR: Device not registered.")
+            # MUST be non-200: a 200 here makes ZK firmware treat the options-fetch
+            # as "done" and drop into command-poll-only mode, never re-handshaking
+            # until a power-cycle — so a device added to ERPNext slightly after it
+            # started polling would push nothing (attendance/enrollment) for days.
+            # A non-200 makes the firmware keep retrying the handshake until the
+            # device is registered.
+            return self.text("ERROR: Device not registered.", 400)
 
         touch_device(sn)
 
-        last_sync_id = get_last_sync_id(sn)
-        settings = frappe.get_cached_doc("Attendance Integration Settings")
-
-        poll_delay = int(settings.device_poll_delay or 10)
-        error_delay = int(settings.device_error_delay or 30)
-        trans_times = settings.trans_times or "00:00;14:05"
-        trans_interval = int(settings.trans_interval or 1)
-        body = (
-            f"GET OPTION FROM: {sn}\n"
-            f"ATTLOGStamp={last_sync_id}\n"
-            "OPERLOGStamp=9999\n"
-            "ATTPHOTOStamp=None\n"
-            f"ErrorDelay={error_delay}\n"
-            f"Delay={poll_delay}\n"
-            f"TransTimes={trans_times}\n"
-            f"TransInterval={trans_interval}\n"
-            "TransFlag=TransData AttLog OpLog AttPhoto EnrollUser ChgUser EnrollFP ChgFP UserPic\n"
-            + (f"TimeZone={_get_device_tz_hours(sn)}\n" if settings.push_timezone_to_device else "")
-            + "Realtime=1\n"
-            "Encrypt=None\n"
-        )
+        body = f"GET OPTION FROM: {sn}\n" + _build_config_options(sn)
         maybe_log(sn, "Handshake", "IN", f"Handshake SN={sn}",
                   raw_data=self.raw_dump(body))
         return self.text(body)
@@ -139,26 +125,7 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
     def _handle_push(self, args) -> Response:
         """Device downloads full config after registration. Return same params as handshake."""
         sn = args.get("SN") or args.get("sn")
-        last_sync_id = get_last_sync_id(sn) if sn else 0
-        settings = frappe.get_cached_doc("Attendance Integration Settings")
-        poll_delay = int(settings.device_poll_delay or 10)
-        error_delay = int(settings.device_error_delay or 30)
-        trans_times = settings.trans_times or "00:00;14:05"
-        trans_interval = int(settings.trans_interval or 1)
-        body = (
-            f"ATTLOGStamp={last_sync_id}\n"
-            "OPERLOGStamp=9999\n"
-            "ATTPHOTOStamp=None\n"
-            f"ErrorDelay={error_delay}\n"
-            f"Delay={poll_delay}\n"
-            f"TransTimes={trans_times}\n"
-            f"TransInterval={trans_interval}\n"
-            "TransFlag=TransData AttLog OpLog AttPhoto EnrollUser ChgUser EnrollFP ChgFP UserPic\n"
-            + (f"TimeZone={_get_device_tz_hours(sn)}\n" if settings.push_timezone_to_device else "")
-            + "Realtime=1\n"
-            "Encrypt=None\n"
-        )
-        return self.text(body)
+        return self.text(_build_config_options(sn))
 
     # ------------------------------------------------------------------
     # Server time  (GET /iclock/rtdata?type=time)
@@ -783,6 +750,38 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
                 message=f"device={sn} device_timezone={device_tz_name!r}: {exc} — storing timestamps unconverted",
             )
         return naive_ts  # fall back to as-is
+
+
+def _build_config_options(sn: str | None) -> str:
+    """Build the ADMS 'GET OPTION' config block sent at handshake / push.
+
+    OPERLOGStamp=0 (not 9999): the device only uploads operlog records NEWER than
+    this watermark, and operlog is how a device delivers user edits AND locally
+    enrolled fingerprint templates (`USER PIN=..` / `FP PIN=..\tFID=..\tTMP=..`).
+    A high watermark (9999) suppressed that upload entirely, so on-device
+    enrollments never reached the server. 0 = "upload everything" — matching
+    ZKTeco's own reference iclock server, which resyncs by setting the stamps to 0.
+    ATTLOGStamp stays a per-device watermark so punches aren't re-sent every boot.
+    """
+    settings = frappe.get_cached_doc("Attendance Integration Settings")
+    last_sync_id = get_last_sync_id(sn) if sn else 0
+    poll_delay = int(settings.device_poll_delay or 10)
+    error_delay = int(settings.device_error_delay or 30)
+    trans_times = settings.trans_times or "00:00;14:05"
+    trans_interval = int(settings.trans_interval or 1)
+    return (
+        f"ATTLOGStamp={last_sync_id}\n"
+        "OPERLOGStamp=0\n"
+        "ATTPHOTOStamp=None\n"
+        f"ErrorDelay={error_delay}\n"
+        f"Delay={poll_delay}\n"
+        f"TransTimes={trans_times}\n"
+        f"TransInterval={trans_interval}\n"
+        "TransFlag=TransData AttLog OpLog AttPhoto EnrollUser ChgUser EnrollFP ChgFP UserPic\n"
+        + (f"TimeZone={_get_device_tz_hours(sn)}\n" if settings.push_timezone_to_device else "")
+        + "Realtime=1\n"
+        "Encrypt=None\n"
+    )
 
 
 def _parse_device_kv(body: str) -> dict:

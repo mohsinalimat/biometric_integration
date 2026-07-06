@@ -166,6 +166,20 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         _finish(cmd_doc, "Success", f"Sent: DATA QUERY ATTLOG StartTime={start_s} EndTime={end_s}")
         return f"C:{cmd_doc.name}:DATA QUERY ATTLOG StartTime={start_s}\tEndTime={end_s}"
 
+    if cmd_doc.command_type == "Pull From Device":
+        # ZKTeco resync: with OPERLOGStamp=0 in the handshake, a CHECK makes the
+        # device re-upload its full user table + every locally-enrolled fingerprint
+        # as OPERLOG records (USER / FP lines) via /iclock/cdata — which the normal
+        # ingest path stores. This is how a finger enrolled ON the device is captured
+        # into ERPNext (then transferable to other devices via Enroll User).
+        # Done-on-send; the uploads arrive asynchronously as separate POSTs.
+        brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
+        if brand != "ZKTeco":
+            _finish(cmd_doc, "Failed", "Pull From Device is only supported for ZKTeco devices.")
+            return None
+        _finish(cmd_doc, "Success", "Sent: CHECK (device replays users + fingerprints via OPERLOG)")
+        return f"C:{cmd_doc.name}:CHECK"
+
     # Enroll / Delete / Update User, Get Enroll Data — stay Sent until the device
     # acks. The claim already bumped attempts, so just build and return the payload.
     try:
@@ -219,17 +233,17 @@ def _zkteco(cmd_doc: Any, user_doc: Any) -> Optional[str]:
         return f"C:{cmd_id}:DATA DELETE USERINFO PIN={pin}"
 
     if cmd_doc.command_type == "Get Enroll Data":
-        # Classic ADMS dialect — widest firmware support (verified against the live
-        # ZKTeco fleet: USERINFO/FPTMP return 0, whereas the newer unified
-        # `DATA QUERY tablename=biodata,...` form is rejected with Return=-1004).
-        # FPTMP returns each fingerprint as an `FP PIN=.. FID=.. Size=.. TMP=..`
-        # record, which carries everything FINGERTMP needs to re-enroll it.
-        # Newer multi-modal firmware answers the same queries; if it instead pushes
-        # unified `biodata` records, the ingest path (adapters/zkteco.py) parses those.
-        return "\n".join([
-            f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}",
-            f"C:{cmd_id}:DATA QUERY FPTMP PIN={pin}",
-        ])
+        # Classic ADMS dialect. USERINFO returns the profile; the fingerprint table
+        # is FINGERTMP (the same name the working DATA UPDATE uses) — NOT `FPTMP`,
+        # which returns Return=-1004 ("table not supported") on this firmware.
+        # FINGERTMP takes a mandatory FID, so we sweep the 10 finger slots; the
+        # device answers each enrolled finger by POSTing an
+        # `FP PIN=.. FID=.. Size=.. TMP=..` OPERLOG record, ingested by the adapter.
+        # (Bulk capture of all users+fingers is the "Pull From Device"/CHECK command
+        # plus OPERLOGStamp=0; this per-user query is a targeted supplement.)
+        lines = [f"C:{cmd_id}:DATA QUERY USERINFO PIN={pin}"]
+        lines += [f"C:{cmd_id}:DATA QUERY FINGERTMP PIN={pin}\tFID={fid}" for fid in range(10)]
+        return "\n".join(lines)
 
     if cmd_doc.command_type == "Update User":
         return f"C:{cmd_id}:DATA UPDATE USERINFO\tPIN={pin}\tName={name}\tPri=0\tPasswd=\tCard=0"
