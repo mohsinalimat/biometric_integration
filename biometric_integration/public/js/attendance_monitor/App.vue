@@ -3,9 +3,18 @@
 		<!-- Toolbar -->
 		<div class="am-toolbar">
 			<div class="am-dategroup">
-				<button class="am-nav" @click="shiftDay(-1)">&lsaquo;</button>
-				<input v-model="date" type="date" class="am-date" @change="load" />
-				<button class="am-nav" @click="shiftDay(1)">&rsaquo;</button>
+				<button class="am-nav" :title="__('Previous day')" @click="shiftDay(-1)">&lsaquo;</button>
+				<button class="am-datebtn" @click="openPicker">
+					{{ displayDate }}
+					<input
+						ref="picker"
+						v-model="date"
+						type="date"
+						class="am-date-native"
+						@change="load"
+					/>
+				</button>
+				<button class="am-nav" :title="__('Next day')" @click="shiftDay(1)">&rsaquo;</button>
 				<button class="am-today" :disabled="isToday" @click="goToday">{{ __("Today") }}</button>
 			</div>
 			<input
@@ -14,7 +23,11 @@
 				class="am-search"
 				:placeholder="__('Search employees…')"
 			/>
-			<select v-if="companies.length > 1" v-model="company" class="am-company" @change="load">
+			<select v-if="departments.length > 1" v-model="department" class="am-select">
+				<option value="">{{ __("All departments") }}</option>
+				<option v-for="d in departments" :key="d" :value="d">{{ d }}</option>
+			</select>
+			<select v-if="companies.length > 1" v-model="company" class="am-select" @change="onCompanyChange">
 				<option v-for="c in companies" :key="c" :value="c">{{ c }}</option>
 			</select>
 		</div>
@@ -32,10 +45,13 @@
 		<div v-else-if="!filteredRows.length" class="am-empty">
 			{{ __("No scans for this day.") }}
 		</div>
-		<div v-else class="am-list">
+		<div v-else class="am-list" :style="{ '--head-w': headWidth + 'px' }">
 			<!-- Hour ruler -->
 			<div class="am-row am-ruler-row">
-				<div class="am-rowhead"></div>
+				<div class="am-rowhead">
+					<span class="am-headlabel">{{ __("Employee") }}</span>
+					<span class="am-resizer" @mousedown.prevent="startResize"></span>
+				</div>
 				<div class="am-ruler">
 					<span
 						v-for="h in rulerHours"
@@ -106,28 +122,41 @@ export default {
 	name: "AttendanceMonitorApp",
 	components: { PunchDialog, TimelineRow },
 	data() {
-		const today = new Date().toISOString().slice(0, 10);
+		const n = new Date();
+		const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
 		return {
 			date: today,
 			company: "VGH B.V.",
 			companies: [],
+			department: "",
 			search: "",
 			rows: [],
 			loading: false,
 			saving: false,
 			dialog: null,
 			nowTick: Date.now(),
+			headWidth: Number(localStorage.getItem("am_head_w")) || 230,
 		};
 	},
 	computed: {
 		isToday() {
-			return this.date === new Date().toISOString().slice(0, 10);
+			return this.date === this.localToday();
+		},
+		displayDate() {
+			const [y, m, d] = this.date.split("-").map(Number);
+			const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1];
+			return `${String(d).padStart(2, "0")} ${mon} ${y}`;
+		},
+		departments() {
+			return [...new Set(this.rows.map((r) => r.department).filter(Boolean))].sort();
 		},
 		filteredRows() {
 			const q = this.search.toLowerCase();
-			return q
-				? this.rows.filter((r) => r.employee_name.toLowerCase().includes(q))
-				: this.rows;
+			return this.rows.filter(
+				(r) =>
+					(!q || r.employee_name.toLowerCase().includes(q)) &&
+					(!this.department || r.department === this.department)
+			);
 		},
 		scannedCount() {
 			return this.rows.filter((r) => r.checkins.length).length;
@@ -210,15 +239,57 @@ export default {
 				this.loading = false;
 			}
 		},
+		localToday() {
+			const d = new Date();
+			return this.fmtDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+		},
+		fmtDate(y, m, d) {
+			return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+		},
 		shiftDay(n) {
-			const d = new Date(this.date + "T00:00:00");
-			d.setDate(d.getDate() + n);
-			this.date = d.toISOString().slice(0, 10);
+			// build the date from LOCAL parts — toISOString() would shift by the
+			// UTC offset (CEST) and eat the increment.
+			const [y, m, d] = this.date.split("-").map(Number);
+			const nd = new Date(y, m - 1, d + n);
+			this.date = this.fmtDate(nd.getFullYear(), nd.getMonth() + 1, nd.getDate());
 			this.load();
 		},
 		goToday() {
-			this.date = new Date().toISOString().slice(0, 10);
+			this.date = this.localToday();
 			this.load();
+		},
+		openPicker() {
+			const el = this.$refs.picker;
+			if (el && el.showPicker) {
+				try {
+					el.showPicker();
+					return;
+				} catch (e) {
+					/* fall through */
+				}
+			}
+			el && el.focus();
+		},
+		onCompanyChange() {
+			this.department = "";
+			this.load();
+		},
+		// --- resizable name column ---
+		startResize(ev) {
+			const startX = ev.clientX;
+			const startW = this.headWidth;
+			const move = (e) => {
+				this.headWidth = Math.max(140, Math.min(520, startW + (e.clientX - startX)));
+			};
+			const up = () => {
+				window.removeEventListener("mousemove", move);
+				window.removeEventListener("mouseup", up);
+				document.body.classList.remove("am-resizing");
+				localStorage.setItem("am_head_w", String(this.headWidth));
+			};
+			window.addEventListener("mousemove", move);
+			window.addEventListener("mouseup", up);
+			document.body.classList.add("am-resizing");
 		},
 		// --- time helpers (all relative to selected date, in ms) ---
 		toMs(iso) {
@@ -309,6 +380,15 @@ export default {
 };
 </script>
 
+<style>
+/* not scoped: global cursor while resizing the name column */
+body.am-resizing,
+body.am-resizing * {
+	cursor: col-resize !important;
+	user-select: none !important;
+}
+</style>
+
 <style scoped>
 .am-root {
 	padding: 12px 16px 48px;
@@ -340,9 +420,27 @@ export default {
 	font-size: 13px;
 	padding: 0 10px;
 }
-.am-date,
+.am-datebtn {
+	position: relative;
+	border: 1px solid var(--border-color, #d1d8dd);
+	background: var(--control-bg, #fff);
+	border-radius: 8px;
+	padding: 7px 12px;
+	font-size: 13px;
+	min-height: 36px;
+	min-width: 118px;
+	cursor: pointer;
+	font-variant-numeric: tabular-nums;
+}
+.am-date-native {
+	position: absolute;
+	inset: 0;
+	opacity: 0;
+	pointer-events: none;
+	width: 100%;
+}
 .am-search,
-.am-company {
+.am-select {
 	border: 1px solid var(--border-color, #d1d8dd);
 	border-radius: 8px;
 	padding: 7px 10px;
@@ -392,12 +490,42 @@ export default {
 	background: rgba(100, 116, 139, 0.05);
 }
 .am-rowhead {
-	width: 230px;
-	min-width: 230px;
+	position: relative;
+	width: var(--head-w, 230px);
+	min-width: var(--head-w, 230px);
 	display: flex;
 	justify-content: space-between;
 	align-items: baseline;
 	gap: 8px;
+}
+.am-headlabel {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-muted, #98a1a9);
+}
+.am-resizer {
+	position: absolute;
+	right: -8px;
+	top: -4px;
+	bottom: -4px;
+	width: 12px;
+	cursor: col-resize;
+	z-index: 5;
+}
+.am-resizer::after {
+	content: "";
+	position: absolute;
+	left: 5px;
+	top: 4px;
+	bottom: 4px;
+	width: 2px;
+	background: var(--border-color, #cdd5db);
+	border-radius: 2px;
+}
+.am-resizer:hover::after {
+	background: #1f6fd6;
 }
 .am-name {
 	font-weight: 500;

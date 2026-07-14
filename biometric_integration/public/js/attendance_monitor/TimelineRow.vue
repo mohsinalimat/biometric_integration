@@ -1,7 +1,7 @@
 <template>
 	<div
 		class="tr-bar"
-		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty }"
+		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty, 'tr-live': drag }"
 		ref="bar"
 		@mousemove="onHover"
 		@mouseleave="hoverMs = null"
@@ -9,31 +9,34 @@
 	>
 		<span v-if="isEmpty && !hoverMs" class="tr-empty-label">{{ emptyLabel }}</span>
 
+		<!-- segments (work / break / unknown) — derived live from marker positions -->
 		<div
-			v-for="(s, i) in row.segments"
+			v-for="(s, i) in segments"
 			:key="'s' + i"
 			class="tr-seg"
 			:class="'tr-seg-' + s.type"
-			:style="segStyle(s)"
+			:style="{ left: pct(s.a), width: `calc(${pct(s.b)} - ${pct(s.a)})` }"
 		></div>
 
+		<!-- IN/OUT trim handles -->
 		<div
-			v-for="c in dots"
-			:key="c.name"
-			class="tr-dot"
-			:class="{ 'tr-dot-drag': drag && drag.name === c.name }"
-			:style="{ left: pct(c.ms) }"
-			@mousedown.prevent.stop="startDrag(c, $event)"
+			v-for="m in markers"
+			:key="m.name"
+			class="tr-mark"
+			:class="['tr-mark-' + m.io, { 'tr-mark-drag': drag && drag.name === m.name }]"
+			:style="{ left: pct(m.ms) }"
+			:title="fmt(m.ms) + ' · ' + (m.io === 'in' ? inLabel : outLabel)"
+			@mousedown.prevent.stop="startDrag(m, $event)"
 			@click.stop
 		></div>
 
-		<!-- hover ghost: vertical line + time pill -->
+		<!-- hover ghost -->
 		<template v-if="hoverMs !== null && !drag">
 			<div class="tr-ghost" :style="{ left: pct(hoverMs) }"></div>
 			<div class="tr-pill" :style="pillStyle(hoverMs)">＋ {{ fmt(hoverMs) }}</div>
 		</template>
 
-		<!-- drag feedback: line + pill with live time and recomputed work total -->
+		<!-- drag feedback -->
 		<template v-if="drag">
 			<div class="tr-ghost tr-ghost-drag" :style="{ left: pct(drag.curMs) }"></div>
 			<div class="tr-pill tr-pill-drag" :style="pillStyle(drag.curMs)">
@@ -41,7 +44,7 @@
 			</div>
 		</template>
 
-		<div v-if="isToday && nowMs >= 0 && nowMs <= scaleSpan + 0" class="tr-nowline" :style="{ left: pct(nowMsAbs) }"></div>
+		<div v-if="isToday && nowMs >= 0 && nowMs <= scaleSpan" class="tr-nowline" :style="{ left: pct(nowMsAbs) }"></div>
 	</div>
 </template>
 
@@ -67,40 +70,62 @@ export default {
 			return !this.row.checkins.length;
 		},
 		emptyLabel() {
-			return typeof __ !== "undefined" ? __("no scans — click to add") : "no scans — click to add";
+			return this.t("no scans — click to add");
+		},
+		inLabel() {
+			return this.t("in");
+		},
+		outLabel() {
+			return this.t("out");
 		},
 		nowMs() {
 			return this.nowMsAbs - this.scaleMin;
 		},
-		dots() {
-			// during a drag, show the dragged dot at its live position
-			return this.row.checkins.map((c) => ({
+		// Single source of truth: every punch as {name, ms, io}, sorted by time,
+		// with the dragged one at its live position. Segments + totals derive
+		// from this, so the whole bar moves together during a drag (no jump).
+		markers() {
+			const list = this.row.checkins.map((c) => ({
 				name: c.name,
 				ms: this.drag && this.drag.name === c.name ? this.drag.curMs : this.toMs(c.time),
 			}));
+			list.sort((a, b) => a.ms - b.ms);
+			list.forEach((m, i) => (m.io = i % 2 === 0 ? "in" : "out"));
+			return list;
+		},
+		segments() {
+			const t = this.markers.map((m) => m.ms);
+			const segs = [];
+			let i = 0;
+			for (; i + 1 < t.length; i += 2) {
+				segs.push({ type: "work", a: t[i], b: t[i + 1] });
+				if (i + 3 < t.length) segs.push({ type: "break", a: t[i + 1], b: t[i + 2] });
+			}
+			// odd trailing punch → unclassifiable stretch
+			if (t.length >= 3 && t.length % 2 === 1) {
+				segs.push({ type: "unknown", a: t[t.length - 2], b: t[t.length - 1] });
+			}
+			return segs;
 		},
 		liveTotals() {
-			// recompute work/break locally from the live dot positions (odd/even pairing)
-			const t = this.dots.map((d) => d.ms).sort((a, b) => a - b);
+			const t = this.markers.map((m) => m.ms);
 			let work = 0;
 			let brk = 0;
 			for (let i = 0; i + 1 < t.length; i += 2) {
 				work += t[i + 1] - t[i];
 				if (i + 3 < t.length) brk += t[i + 2] - t[i + 1];
 			}
-			const f = (ms) => {
-				const h = Math.floor(ms / 3600000);
-				const m = Math.round((ms % 3600000) / 60000);
-				return `${h}:${String(m).padStart(2, "0")}`;
-			};
-			const wl = typeof __ !== "undefined" ? __("work") : "work";
-			return brk ? `${f(work)} ${wl} · ☕ ${f(brk)}` : `${f(work)} ${wl}`;
+			const f = (ms) => `${Math.floor(ms / 3600000)}:${String(Math.round((ms % 3600000) / 60000)).padStart(2, "0")}`;
+			return brk ? `${f(work)} ${this.t("work")} · ☕ ${f(brk)}` : `${f(work)} ${this.t("work")}`;
 		},
 	},
 	beforeUnmount() {
 		this.unbindDrag();
 	},
 	methods: {
+		t(s) {
+			return typeof __ !== "undefined" ? __(s) : s;
+		},
 		toMs(iso) {
 			return new Date(iso).getTime() - new Date(this.date + "T00:00:00").getTime();
 		},
@@ -109,51 +134,35 @@ export default {
 			return Math.max(0, Math.min(100, p)) + "%";
 		},
 		fmt(ms) {
-			const hh = String(Math.floor(ms / 3600000)).padStart(2, "0");
-			const mm = String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0");
-			return `${hh}:${mm}`;
+			return `${String(Math.floor(ms / 3600000)).padStart(2, "0")}:${String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0")}`;
 		},
 		pillStyle(ms) {
-			// keep the pill inside the bar near the edges
 			const p = ((ms - this.scaleMin) / this.scaleSpan) * 100;
 			if (p < 8) return { left: p + "%", transform: "translateX(0)" };
 			if (p > 92) return { left: p + "%", transform: "translateX(-100%)" };
 			return { left: p + "%", transform: "translateX(-50%)" };
 		},
-		segStyle(s) {
-			const a = this.toMs(s.start);
-			const b = this.toMs(s.end);
-			return { left: this.pct(a), width: `calc(${this.pct(b)} - ${this.pct(a)})` };
-		},
 		eventMs(ev) {
 			const rect = this.$refs.bar.getBoundingClientRect();
 			const frac = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-			const raw = this.scaleMin + frac * this.scaleSpan;
-			return Math.round(raw / SNAP) * SNAP;
+			return Math.round((this.scaleMin + frac * this.scaleSpan) / SNAP) * SNAP;
 		},
 		onHover(ev) {
 			if (this.drag) return;
-			if (ev.target.classList.contains("tr-dot")) {
-				this.hoverMs = null;
-				return;
-			}
-			this.hoverMs = this.eventMs(ev);
+			this.hoverMs = ev.target.classList.contains("tr-mark") ? null : this.eventMs(ev);
 		},
 		onBarClick(ev) {
 			if (this.suppressClick) return;
 			this.$emit("add", { time: this.fmt(this.eventMs(ev)), x: ev.clientX, y: ev.clientY });
 		},
 		// ---- drag ----
-		startDrag(c, ev) {
-			// only left button; touch taps come through as click-without-move
+		startDrag(m, ev) {
 			if (ev.button !== 0) return;
 			this.hoverMs = null;
-			this.drag = { name: c.name, origMs: c.ms, curMs: c.ms, moved: false };
+			this.drag = { name: m.name, origMs: m.ms, curMs: m.ms, moved: false };
 			this._onMove = (e) => this.dragMove(e);
 			this._onUp = (e) => this.dragEnd(e);
-			this._onKey = (e) => {
-				if (e.key === "Escape") this.cancelDrag();
-			};
+			this._onKey = (e) => e.key === "Escape" && this.cancelDrag();
 			window.addEventListener("mousemove", this._onMove);
 			window.addEventListener("mouseup", this._onUp);
 			window.addEventListener("keydown", this._onKey);
@@ -186,7 +195,6 @@ export default {
 			this.suppressPulse();
 		},
 		suppressPulse() {
-			// swallow only the click generated by THIS mouseup — clear on next tick
 			this.suppressClick = true;
 			setTimeout(() => (this.suppressClick = false), 0);
 		},
@@ -202,7 +210,6 @@ export default {
 </script>
 
 <style>
-/* not scoped: body-level drag cursor */
 body.tr-dragging,
 body.tr-dragging * {
 	cursor: grabbing !important;
@@ -214,7 +221,7 @@ body.tr-dragging * {
 .tr-bar {
 	position: relative;
 	flex: 1;
-	height: 30px;
+	height: 32px;
 	background: var(--control-bg, #f4f5f6);
 	border-radius: 6px;
 	cursor: copy;
@@ -243,7 +250,7 @@ body.tr-dragging * {
 	bottom: 6px;
 	border-radius: 4px;
 	pointer-events: none;
-	transition: left 0.25s ease, width 0.25s ease;
+	transition: left 0.22s ease, width 0.22s ease;
 }
 .tr-seg-work {
 	background: #4caf7d;
@@ -252,35 +259,46 @@ body.tr-dragging * {
 	background: #f0b95e;
 }
 .tr-seg-unknown {
-	background: repeating-linear-gradient(
-		45deg,
-		#d7dde2,
-		#d7dde2 5px,
-		#eceff1 5px,
-		#eceff1 10px
-	);
+	background: repeating-linear-gradient(45deg, #d7dde2, #d7dde2 5px, #eceff1 5px, #eceff1 10px);
 }
-.tr-dot {
+/* while dragging, segments + the dragged handle follow the cursor with no ease */
+.tr-live .tr-seg {
+	transition: none;
+}
+
+/* IN/OUT trim handles */
+.tr-mark {
 	position: absolute;
-	top: 50%;
-	width: 14px;
-	height: 14px;
-	margin: -7px 0 0 -7px;
-	border-radius: 50%;
-	background: #fff;
-	border: 2.5px solid #2c3e50;
-	cursor: grab;
+	top: 3px;
+	bottom: 3px;
+	width: 8px;
+	margin-left: -4px;
+	border-radius: 3px;
 	z-index: 3;
-	transition: left 0.25s ease, transform 0.1s;
+	cursor: grab;
+	box-shadow: 0 1px 3px rgba(15, 23, 42, 0.35);
+	transition: left 0.22s ease, transform 0.1s, box-shadow 0.1s;
+	/* two faint grip lines */
+	background-image: linear-gradient(#ffffffaa, #ffffffaa), linear-gradient(#ffffffaa, #ffffffaa);
+	background-size: 1px 10px, 1px 10px;
+	background-position: 40% 50%, 60% 50%;
+	background-repeat: no-repeat;
 }
-.tr-dot:hover {
-	transform: scale(1.3);
+.tr-mark-in {
+	background-color: #1f9d63;
 }
-.tr-dot-drag {
-	transition: transform 0.1s; /* no left-transition while dragging */
-	transform: scale(1.35);
-	border-color: #1f6fd6;
-	box-shadow: 0 2px 8px rgba(31, 111, 214, 0.45);
+.tr-mark-out {
+	background-color: #e06a2e;
+}
+.tr-mark:hover {
+	transform: scaleX(1.35);
+}
+.tr-mark-drag {
+	transition: transform 0.1s;
+	transform: scaleX(1.5) scaleY(1.05);
+	box-shadow: 0 3px 10px rgba(31, 111, 214, 0.5);
+	outline: 2px solid #1f6fd6;
+	outline-offset: 1px;
 }
 .tr-ghost {
 	position: absolute;
@@ -323,12 +341,11 @@ body.tr-dragging * {
 @media (max-width: 640px) {
 	.tr-bar {
 		flex: none;
-		height: 38px;
+		height: 40px;
 	}
-	.tr-dot {
-		width: 18px;
-		height: 18px;
-		margin: -9px 0 0 -9px;
+	.tr-mark {
+		width: 11px;
+		margin-left: -5.5px;
 	}
 }
 </style>

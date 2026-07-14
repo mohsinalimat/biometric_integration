@@ -40,21 +40,42 @@ def dedup_punches(times: list[datetime], window_seconds: int = 180) -> list[date
 
 
 def compute_day(times: list[datetime], window_seconds: int = 180,
-                expected_punches: Optional[int] = 4) -> dict:
+                expected_punches: Optional[int] = 4, mode: str = "pairs") -> dict:
     """Turn one employee-day's raw punches into work/break seconds + segments.
+
+    mode:
+      "pairs"      — 4-scan model: work = sum of IN->OUT pairs, break = the
+                     gaps between pairs (VGH construction crew).
+      "span"       — first-in / last-out: work = last - first, no break
+                     tracking (e.g. Vincitool, contract-hours style).
 
     Returns:
         {
           "scans":   [datetime, ...]            # deduped, ordered
           "work_seconds":  int,
           "break_seconds": int,
-          "segments": [{"type": "work"|"break", "start": dt, "end": dt}, ...],
-          "complete": bool,                      # even count (all pairs closed)
+          "segments": [{"type": "work"|"break"|"unknown", "start": dt, "end": dt}, ...],
+          "complete": bool,
           "flag": None | "missing_punch" | "unexpected_count",
         }
     """
     scans = dedup_punches(times, window_seconds)
     n = len(scans)
+
+    if mode == "span":
+        if n == 0:
+            return {"scans": [], "work_seconds": 0, "break_seconds": 0,
+                    "segments": [], "complete": False, "flag": None}
+        work = int((scans[-1] - scans[0]).total_seconds())
+        return {
+            "scans": scans,
+            "work_seconds": work,
+            "break_seconds": 0,
+            "segments": [{"type": "work", "start": scans[0], "end": scans[-1]}] if n >= 2 else [],
+            "complete": n >= 2,
+            "flag": None if n >= 2 else "missing_punch",
+        }
+
     segments: list[dict] = []
     work = 0
     brk = 0
@@ -155,7 +176,7 @@ def get_monitor_companies() -> list[str]:
 @frappe.whitelist()
 def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
                            window_seconds=180, expected_punches=4,
-                           include_absent=0):
+                           include_absent=0, mode="pairs"):
     """Per employee-per-day net-time-on-site for a company's crew.
 
     Returns rows: {employee, employee_name, date, scans[iso], work_hours,
@@ -175,8 +196,9 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     include_absent = int(include_absent or 0) and from_date == to_date
 
     emps = frappe.get_all("Employee", filters={"company": company, "status": "Active"},
-                          fields=["name", "employee_name"])
+                          fields=["name", "employee_name", "department"])
     emp_names = {e.name: e.employee_name for e in emps}
+    emp_dept = {e.name: (e.department or "") for e in emps}
     if not emp_names:
         return []
 
@@ -196,10 +218,11 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     out = []
     for (emp, day), items in sorted(buckets.items(), key=lambda x: (emp_names.get(x[0][0], ""), x[0][1])):
         times = [t for _, t in items]
-        res = compute_day(times, window_seconds, expected_punches)
+        res = compute_day(times, window_seconds, expected_punches, mode=mode)
         out.append({
             "employee": emp,
             "employee_name": emp_names.get(emp, emp),
+            "department": emp_dept.get(emp, ""),
             "date": str(day),
             "scans": [t.isoformat() for t in res["scans"]],
             "checkins": [{"name": nm, "time": t.isoformat()} for nm, t in sorted(items, key=lambda x: x[1])],
@@ -217,6 +240,7 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
             out.append({
                 "employee": emp,
                 "employee_name": emp_names.get(emp, emp),
+                "department": emp_dept.get(emp, ""),
                 "date": str(from_date),
                 "scans": [],
                 "checkins": [],
