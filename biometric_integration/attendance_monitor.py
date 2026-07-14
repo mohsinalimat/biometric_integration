@@ -290,24 +290,8 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
 
     out = []
     for (emp, day), items in sorted(buckets.items(), key=lambda x: (emp_names.get(x[0][0], ""), x[0][1])):
-        times = [t for _, t in items]
-        row_mode = mode or mode_of(emp, day)
-        res = compute_day(times, window_seconds, expected_punches, mode=row_mode)
-        out.append({
-            "employee": emp,
-            "employee_name": emp_names.get(emp, emp),
-            "department": emp_dept.get(emp, ""),
-            "date": str(day),
-            "mode": row_mode,
-            "scans": [t.isoformat() for t in res["scans"]],
-            "checkins": [{"name": nm, "time": t.isoformat()} for nm, t in sorted(items, key=lambda x: x[1])],
-            "work_hours": _h(res["work_seconds"]),
-            "break_hours": _h(res["break_seconds"]),
-            "segments": [{"type": s["type"], "start": s["start"].isoformat(), "end": s["end"].isoformat()}
-                         for s in res["segments"]],
-            "complete": res["complete"],
-            "flag": res["flag"],
-        })
+        out.append(_row_dict(emp, emp_names.get(emp, emp), emp_dept.get(emp, ""), day, items,
+                             mode or mode_of(emp, day), window_seconds, expected_punches))
 
     if include_absent:
         scanned = {emp for (emp, _day) in buckets}
@@ -337,6 +321,58 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
         for r in out:
             r["holiday"] = holiday
     return out
+
+
+def _row_dict(emp, name, dept, day, items, mode, window_seconds=180, expected_punches=4):
+    """Build one employee-day monitor row from `items` = [(checkin_name, datetime)]."""
+    times = [t for _, t in items]
+    res = compute_day(times, window_seconds, expected_punches, mode=mode)
+    return {
+        "employee": emp,
+        "employee_name": name or emp,
+        "department": dept or "",
+        "date": str(day),
+        "mode": mode,
+        "scans": [t.isoformat() for t in res["scans"]],
+        "checkins": [{"name": nm, "time": t.isoformat()} for nm, t in sorted(items, key=lambda x: x[1])],
+        "work_hours": _h(res["work_seconds"]),
+        "break_hours": _h(res["break_seconds"]),
+        "segments": [{"type": s["type"], "start": s["start"].isoformat(), "end": s["end"].isoformat()}
+                     for s in res["segments"]],
+        "complete": res["complete"],
+        "flag": res["flag"],
+    }
+
+
+def _employee_day_row(employee: str, day) -> dict:
+    """Recompute a single employee-day row (same shape as get_attendance_monitor
+    rows) so a correction can patch that row in place — no full reload. Uses the
+    monitor's default window/expected-punches so the numbers match the grid."""
+    day = getdate(day)
+    emp = frappe.db.get_value("Employee", employee,
+                              ["employee_name", "department", "company", "default_shift"], as_dict=True) or {}
+    rows = frappe.get_all(
+        "Employee Checkin",
+        filters={"employee": employee, "time": ["between", [f"{day} 00:00:00", f"{day} 23:59:59"]]},
+        fields=["name", "time"], order_by="time asc",
+    )
+    items = [(r.name, get_datetime(r.time)) for r in rows]
+    mode = _shift_mode_resolver([employee], {employee: emp.get("default_shift")}, day, day)(employee, day)
+    holiday = _holiday_on(emp.get("company"), day)
+
+    if items:
+        row = _row_dict(employee, emp.get("employee_name"), emp.get("department"), day, items, mode)
+    else:
+        leave = _leaves_on([employee], day).get(employee)
+        row = {
+            "employee": employee, "employee_name": emp.get("employee_name") or employee,
+            "department": emp.get("department") or "", "date": str(day), "mode": mode,
+            "scans": [], "checkins": [], "work_hours": 0.0, "break_hours": 0.0, "segments": [],
+            "complete": False, "flag": "on_leave" if leave else "no_punches", "leave_type": leave,
+        }
+    if holiday:
+        row["holiday"] = holiday
+    return row
 
 
 def _shift_mode_resolver(employees: list[str], emp_default_shift: dict, from_date, to_date):
@@ -414,7 +450,7 @@ def add_checkin(employee, time, device_id=None):
         doc.device_id = device_id
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
-    return doc.name
+    return _employee_day_row(employee, getdate(doc.time))
 
 
 @frappe.whitelist()
@@ -450,7 +486,7 @@ def update_checkin(name, time):
     if new_day != old_day:
         _run_processor(employee, old_day)
     frappe.db.commit()
-    return True
+    return _employee_day_row(employee, new_day)
 
 
 @frappe.whitelist()
@@ -469,4 +505,4 @@ def delete_checkin(name):
 
     _run_processor(employee, day)
     frappe.db.commit()
-    return True
+    return _employee_day_row(employee, day)

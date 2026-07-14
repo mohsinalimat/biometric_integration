@@ -97,6 +97,7 @@
 					:is-today="isToday"
 					:now-ms-abs="isToday && nowInScale ? nowMs : -1"
 					:readonly="!canCorrect"
+					:saving="!!savingKeys[row.employee]"
 					@add="(p) => openAdd(row, p)"
 					@edit="(p) => openEdit(row, p.checkin, p)"
 					@dragsave="(p) => onDragSave(row, p)"
@@ -142,6 +143,7 @@ export default {
 			rows: [],
 			loading: false,
 			saving: false,
+			savingKeys: {}, // employee -> true while an optimistic correction is in flight
 			dialog: null,
 			nowTick: Date.now(),
 			headWidth: Number(localStorage.getItem("am_head_w")) || 230,
@@ -370,26 +372,58 @@ export default {
 				y: pos.y || 120,
 			};
 		},
-		async onDragSave(row, { name, time }) {
-			await api.updateCheckin({ name, time: `${this.date} ${time}:00` });
-			if (typeof frappe !== "undefined" && frappe.show_alert) {
-				frappe.show_alert({
-					message: `${row.employee_name} → ${time}`,
-					indicator: "green",
-				}, 3);
+		// Replace one row in place (preserving list order) — used to silently
+		// reconcile with the server's recomputed row after a correction, with no
+		// full reload / reflow / reorder.
+		patchRow(updated) {
+			if (!updated || !updated.employee) return;
+			const i = this.rows.findIndex((r) => r.employee === updated.employee && r.date === updated.date);
+			if (i >= 0) this.rows.splice(i, 1, updated);
+		},
+		setSaving(employee, on) {
+			if (on) this.savingKeys = { ...this.savingKeys, [employee]: true };
+			else {
+				const next = { ...this.savingKeys };
+				delete next[employee];
+				this.savingKeys = next;
 			}
-			await this.load();
+		},
+		notifyError(e) {
+			const msg = (e && (e.message || (e._server_messages && e._server_messages))) || this.__("Could not save the change");
+			if (typeof frappe !== "undefined" && frappe.show_alert) {
+				frappe.show_alert({ message: String(msg), indicator: "red" }, 5);
+			}
+		},
+		async onDragSave(row, { name, time }) {
+			// Optimistic: move the punch locally NOW (synchronously, before any
+			// await) so the dragged handle stays where it was dropped instead of
+			// snapping back to the old server time while the save round-trips.
+			const checkin = row.checkins.find((c) => c.name === name);
+			const original = checkin ? checkin.time : null;
+			if (checkin) checkin.time = `${this.date}T${time}:00`;
+			this.setSaving(row.employee, true);
+			try {
+				const updated = await api.updateCheckin({ name, time: `${this.date} ${time}:00` });
+				this.patchRow(updated); // silent reconcile (recomputed totals/segments)
+			} catch (e) {
+				if (checkin && original !== null) checkin.time = original; // revert on failure
+				this.notifyError(e);
+			} finally {
+				this.setSaving(row.employee, false);
+			}
 		},
 		async onSave({ name, time }) {
+			const employee = this.dialog.employee;
+			const isAdd = this.dialog.mode === "add";
 			this.saving = true;
 			try {
-				if (this.dialog.mode === "add") {
-					await api.addCheckin({ employee: this.dialog.employee, time });
-				} else {
-					await api.updateCheckin({ name, time });
-				}
+				const updated = isAdd
+					? await api.addCheckin({ employee, time })
+					: await api.updateCheckin({ name, time });
 				this.dialog = null;
-				await this.load();
+				this.patchRow(updated); // patch in place — no reflow
+			} catch (e) {
+				this.notifyError(e);
 			} finally {
 				this.saving = false;
 			}
@@ -397,9 +431,11 @@ export default {
 		async onRemove({ name }) {
 			this.saving = true;
 			try {
-				await api.deleteCheckin({ name });
+				const updated = await api.deleteCheckin({ name });
 				this.dialog = null;
-				await this.load();
+				this.patchRow(updated);
+			} catch (e) {
+				this.notifyError(e);
 			} finally {
 				this.saving = false;
 			}

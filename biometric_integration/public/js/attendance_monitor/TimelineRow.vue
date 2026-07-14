@@ -1,7 +1,7 @@
 <template>
 	<div
 		class="tr-bar"
-		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty, 'tr-live': drag, 'tr-readonly': readonly }"
+		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty, 'tr-live': drag, 'tr-readonly': readonly, 'tr-saving': saving }"
 		ref="bar"
 		@mousemove="onHover"
 		@mouseleave="hoverMs = null"
@@ -68,6 +68,7 @@ export default {
 		isToday: { type: Boolean, default: false },
 		nowMsAbs: { type: Number, default: -1 },
 		readonly: { type: Boolean, default: false },
+		saving: { type: Boolean, default: false },
 	},
 	emits: ["add", "edit", "dragsave"],
 	data() {
@@ -202,16 +203,16 @@ export default {
 			return Math.round((this.scaleMin + frac * this.scaleSpan) / SNAP) * SNAP;
 		},
 		onHover(ev) {
-			if (this.drag || this.readonly) return;
+			if (this.drag || this.readonly || this.saving) return;
 			this.hoverMs = ev.target.classList.contains("tr-mark") ? null : this.eventMs(ev);
 		},
 		onBarClick(ev) {
-			if (this.suppressClick || this.readonly) return;
+			if (this.suppressClick || this.readonly || this.saving) return;
 			this.$emit("add", { time: this.fmt(this.eventMs(ev)), x: ev.clientX, y: ev.clientY });
 		},
 		// ---- drag ----
 		startDrag(m, ev) {
-			if (ev.button !== 0 || this.readonly) return;
+			if (ev.button !== 0 || this.readonly || this.saving) return;
 			this.hoverMs = null;
 			this.drag = { name: m.name, origMs: m.ms, curMs: m.ms, moved: false };
 			this._onMove = (e) => this.dragMove(e);
@@ -327,6 +328,30 @@ body.tr-dragging * {
 }
 .tr-readonly .tr-mark {
 	cursor: default;
+}
+/* optimistic save in flight: the punch already sits at its new spot; freeze the
+   row (no more edits) and show a quiet progress shimmer until the server row lands */
+.tr-saving {
+	cursor: progress;
+}
+.tr-saving .tr-mark {
+	pointer-events: none;
+	cursor: progress;
+}
+.tr-saving::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: 6px;
+	pointer-events: none;
+	background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+	background-size: 200% 100%;
+	animation: tr-shimmer 1s linear infinite;
+	z-index: 4;
+}
+@keyframes tr-shimmer {
+	0% { background-position: 200% 0; }
+	100% { background-position: -200% 0; }
 }
 .tr-seg-work {
 	background: #4caf7d;
