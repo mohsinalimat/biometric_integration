@@ -12,7 +12,7 @@
 				v-model.trim="search"
 				type="search"
 				class="am-search"
-				:placeholder="__('Search worker…')"
+				:placeholder="__('Search employees…')"
 			/>
 			<select v-if="companies.length > 1" v-model="company" class="am-company" @change="load">
 				<option v-for="c in companies" :key="c" :value="c">{{ c }}</option>
@@ -73,8 +73,8 @@
 					:scale-span="scale.span"
 					:is-today="isToday"
 					:now-ms-abs="isToday && nowInScale ? nowMs : -1"
-					@add="(t) => openAdd(row, t)"
-					@edit="(c) => openEdit(row, c)"
+					@add="(p) => openAdd(row, p)"
+					@edit="(p) => openEdit(row, p.checkin, p)"
 					@dragsave="(p) => onDragSave(row, p)"
 				/>
 			</div>
@@ -88,6 +88,8 @@
 			:prefill="dialog.prefill"
 			:checkin-name="dialog.checkinName"
 			:busy="saving"
+			:x="dialog.x"
+			:y="dialog.y"
 			@save="onSave"
 			@remove="onRemove"
 			@close="dialog = null"
@@ -196,7 +198,7 @@ export default {
 			return typeof __ !== "undefined" ? __(s) : s;
 		},
 		async load() {
-			this.loading = true;
+			this.loading = !this.rows.length; // quiet refresh: keep rows on screen
 			try {
 				this.rows = (await api.fetchMonitor({
 					from_date: this.date,
@@ -247,22 +249,26 @@ export default {
 			return this.isToday && row.checkins.length % 2 === 1;
 		},
 		// --- corrections ---
-		openAdd(row, prefill) {
+		openAdd(row, { time, x, y }) {
 			this.dialog = {
 				mode: "add",
 				employee: row.employee,
 				employeeName: row.employee_name,
-				prefill,
+				prefill: time,
 				checkinName: null,
+				x,
+				y,
 			};
 		},
-		openEdit(row, checkin) {
+		openEdit(row, checkin, pos = {}) {
 			this.dialog = {
 				mode: "edit",
 				employee: row.employee,
 				employeeName: row.employee_name,
 				prefill: checkin.time.slice(11, 16),
 				checkinName: checkin.name,
+				x: pos.x || window.innerWidth / 2,
+				y: pos.y || 120,
 			};
 		},
 		async onDragSave(row, { name, time }) {
@@ -305,7 +311,8 @@ export default {
 
 <style scoped>
 .am-root {
-	padding: 4px 0 40px;
+	padding: 12px 16px 48px;
+	max-width: 1400px;
 }
 .am-toolbar {
 	display: flex;
@@ -350,7 +357,7 @@ export default {
 .am-chips {
 	display: flex;
 	gap: 8px;
-	margin-bottom: 14px;
+	margin: 2px 0 18px;
 	flex-wrap: wrap;
 }
 .am-chip {
@@ -375,9 +382,14 @@ export default {
 .am-row {
 	display: flex;
 	align-items: center;
-	gap: 12px;
-	padding: 7px 0;
+	gap: 14px;
+	padding: 9px 6px;
 	border-bottom: 1px solid var(--border-color, #ebeef0);
+	border-radius: 8px;
+	transition: background 0.15s;
+}
+.am-row:hover {
+	background: rgba(100, 116, 139, 0.05);
 }
 .am-rowhead {
 	width: 230px;

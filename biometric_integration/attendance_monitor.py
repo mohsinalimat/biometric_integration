@@ -72,6 +72,12 @@ def compute_day(times: list[datetime], window_seconds: int = 180,
             segments.append({"type": "break", "start": b_start, "end": b_end})
         i += 2
 
+    # Odd count: the trailing punch can't be paired — the stretch leading up to
+    # it is unclassifiable (was it work or break?). Surface it as "unknown" so
+    # the UI shows an honest gray gap instead of clean background.
+    if n >= 3 and n % 2 == 1:
+        segments.append({"type": "unknown", "start": scans[-2], "end": scans[-1]})
+
     complete = (n % 2 == 0) and n > 0
     flag = None
     if n == 0:

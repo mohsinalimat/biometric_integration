@@ -1,11 +1,10 @@
 <template>
-	<div class="pd-backdrop" @click.self="$emit('close')">
-		<div class="pd-card">
-			<div class="pd-title">
-				{{ mode === "add" ? labels.add : labels.edit }}
-				<span class="pd-emp">{{ employeeName }}</span>
-			</div>
-			<div class="pd-date">{{ date }}</div>
+	<div ref="card" class="pd-pop" :style="popStyle" @keydown.esc="$emit('close')">
+		<div class="pd-head">
+			<span class="pd-title">{{ mode === "add" ? labels.add : labels.edit }}</span>
+			<span class="pd-emp">{{ employeeName }}</span>
+		</div>
+		<div class="pd-body">
 			<input
 				ref="timeInput"
 				v-model="time"
@@ -14,38 +13,37 @@
 				class="pd-time"
 				@keyup.enter="save"
 			/>
-			<div class="pd-actions">
-				<button class="pd-btn pd-primary" :disabled="busy || !time" @click="save">
-					{{ mode === "add" ? labels.add_btn : labels.save_btn }}
-				</button>
-				<button
-					v-if="mode === 'edit'"
-					class="pd-btn pd-danger"
-					:disabled="busy"
-					@click="remove"
-				>
-					{{ labels.delete_btn }}
-				</button>
-				<button class="pd-btn" :disabled="busy" @click="$emit('close')">
-					{{ labels.cancel_btn }}
-				</button>
-			</div>
+			<button class="pd-btn pd-primary" :disabled="busy || !time" @click="save">
+				{{ mode === "add" ? labels.add_btn : labels.save_btn }}
+			</button>
+			<button
+				v-if="mode === 'edit'"
+				class="pd-btn pd-danger"
+				:disabled="busy"
+				:title="labels.delete_btn"
+				@click="$emit('remove', { name: checkinName })"
+			>
+				✕
+			</button>
 		</div>
 	</div>
 </template>
 
 <script>
-// mode "add":  employee + date + prefill time  → emits save({time})
-// mode "edit": existing checkin {name, time}   → emits save({name, time}) / remove({name})
+// Compact popover anchored at the click/dot position (x, y in viewport px).
+// Desktop: floats under the anchor. Mobile (<640px): bottom sheet.
+// Enter saves, Escape or clicking outside closes.
 export default {
 	name: "PunchDialog",
 	props: {
 		mode: { type: String, required: true },
 		employeeName: { type: String, required: true },
 		date: { type: String, required: true },
-		prefill: { type: String, default: "" }, // "HH:MM"
+		prefill: { type: String, default: "" },
 		checkinName: { type: String, default: null },
 		busy: { type: Boolean, default: false },
+		x: { type: Number, default: 0 },
+		y: { type: Number, default: 0 },
 	},
 	emits: ["save", "remove", "close"],
 	data() {
@@ -57,77 +55,98 @@ export default {
 				add_btn: __("Add"),
 				save_btn: __("Save"),
 				delete_btn: __("Delete"),
-				cancel_btn: __("Cancel"),
 			},
 		};
 	},
+	computed: {
+		popStyle() {
+			if (window.innerWidth <= 640) return {}; // bottom sheet via CSS
+			const W = 250;
+			const left = Math.min(Math.max(this.x - W / 2, 8), window.innerWidth - W - 8);
+			const top = Math.min(this.y + 14, window.innerHeight - 90);
+			return { left: left + "px", top: top + "px", width: W + "px" };
+		},
+	},
 	mounted() {
 		this.$refs.timeInput && this.$refs.timeInput.focus();
+		// close on outside click — deferred so the opening click doesn't self-close
+		setTimeout(() => {
+			this._outside = (e) => {
+				if (this.$refs.card && !this.$refs.card.contains(e.target)) this.$emit("close");
+			};
+			document.addEventListener("mousedown", this._outside);
+		}, 0);
+	},
+	beforeUnmount() {
+		this._outside && document.removeEventListener("mousedown", this._outside);
 	},
 	methods: {
 		save() {
 			if (!this.time) return;
 			this.$emit("save", { name: this.checkinName, time: `${this.date} ${this.time}:00` });
 		},
-		remove() {
-			this.$emit("remove", { name: this.checkinName });
-		},
 	},
 };
 </script>
 
 <style scoped>
-.pd-backdrop {
+.pd-pop {
 	position: fixed;
-	inset: 0;
-	background: rgba(0, 0, 0, 0.35);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	z-index: 1050;
-}
-.pd-card {
+	z-index: 1060;
 	background: var(--card-bg, #fff);
+	border: 1px solid var(--border-color, #dfe4e8);
 	border-radius: 10px;
-	padding: 18px 20px;
-	width: min(320px, calc(100vw - 32px));
-	box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+	padding: 10px 12px;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+	animation: pd-in 0.12s ease-out;
+}
+@keyframes pd-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+.pd-head {
+	display: flex;
+	gap: 6px;
+	align-items: baseline;
+	margin-bottom: 8px;
+	font-size: 12px;
 }
 .pd-title {
 	font-weight: 600;
-	margin-bottom: 2px;
 }
 .pd-emp {
-	font-weight: 400;
 	color: var(--text-muted, #6c7680);
-	margin-left: 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
-.pd-date {
-	color: var(--text-muted, #6c7680);
-	font-size: 12px;
-	margin-bottom: 10px;
+.pd-body {
+	display: flex;
+	gap: 6px;
+	align-items: center;
 }
 .pd-time {
-	width: 100%;
-	font-size: 22px;
-	padding: 8px 10px;
+	flex: 1;
+	min-width: 0;
+	font-size: 15px;
+	padding: 6px 8px;
 	border: 1px solid var(--border-color, #d1d8dd);
 	border-radius: 8px;
-	margin-bottom: 14px;
-}
-.pd-actions {
-	display: flex;
-	gap: 8px;
 }
 .pd-btn {
-	flex: 1;
-	padding: 9px 0;
 	border-radius: 8px;
 	border: 1px solid var(--border-color, #d1d8dd);
 	background: var(--control-bg, #f4f5f6);
 	font-size: 13px;
 	cursor: pointer;
-	min-height: 38px; /* touch target */
+	padding: 7px 12px;
+	min-height: 34px;
 }
 .pd-primary {
 	background: var(--primary, #171717);
@@ -138,8 +157,38 @@ export default {
 	background: #fff0f0;
 	color: #c0392b;
 	border-color: #f1c7c2;
+	padding: 7px 10px;
 }
 .pd-btn:disabled {
 	opacity: 0.55;
+}
+
+@media (max-width: 640px) {
+	.pd-pop {
+		left: 0 !important;
+		right: 0;
+		top: auto !important;
+		bottom: 0;
+		width: auto !important;
+		border-radius: 14px 14px 0 0;
+		padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+		animation: pd-up 0.16s ease-out;
+	}
+	@keyframes pd-up {
+		from {
+			transform: translateY(30%);
+			opacity: 0.6;
+		}
+		to {
+			transform: translateY(0);
+			opacity: 1;
+		}
+	}
+	.pd-time {
+		font-size: 18px;
+	}
+	.pd-btn {
+		min-height: 42px;
+	}
 }
 </style>
