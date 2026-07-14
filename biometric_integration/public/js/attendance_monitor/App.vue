@@ -21,9 +21,10 @@
 
 		<!-- Summary chips -->
 		<div class="am-chips">
-			<span class="am-chip">{{ rows.length }} {{ __("scanned") }}</span>
+			<span class="am-chip">{{ scannedCount }} {{ __("scanned") }}</span>
 			<span class="am-chip am-chip-flag" v-if="flaggedCount">⚠ {{ flaggedCount }} {{ __("flagged") }}</span>
 			<span class="am-chip am-chip-now" v-if="isToday">● {{ onSiteCount }} {{ __("on site now") }}</span>
+			<span class="am-chip am-chip-absent" v-if="absentCount">◌ {{ absentCount }} {{ __("no scans") }}</span>
 		</div>
 
 		<!-- Rows -->
@@ -46,39 +47,36 @@
 				</div>
 			</div>
 
-			<div v-for="row in filteredRows" :key="row.employee + row.date" class="am-row">
+			<div
+				v-for="row in filteredRows"
+				:key="row.employee + row.date"
+				class="am-row"
+				:class="{ 'am-row-absent': row.flag === 'no_scans' }"
+			>
 				<div class="am-rowhead">
 					<div class="am-name" :title="row.employee">{{ row.employee_name }}</div>
 					<div class="am-hours">
-						<span class="am-work">{{ fmtH(row.work_hours) }}</span>
-						<span class="am-break" v-if="row.break_hours">☕ {{ fmtH(row.break_hours) }}</span>
-						<span v-if="row.flag" class="am-flagicon" :title="flagLabel(row.flag)">⚠</span>
-						<span v-else-if="onSite(row)" class="am-nowicon" :title="__('On site now')">●</span>
-						<span v-else class="am-okicon">✓</span>
+						<template v-if="row.flag !== 'no_scans'">
+							<span class="am-work">{{ fmtH(row.work_hours) }}</span>
+							<span class="am-break" v-if="row.break_hours">☕ {{ fmtH(row.break_hours) }}</span>
+							<span v-if="row.flag" class="am-flagicon" :title="flagLabel(row.flag)">⚠</span>
+							<span v-else-if="onSite(row)" class="am-nowicon" :title="__('On site now')">●</span>
+							<span v-else class="am-okicon">✓</span>
+						</template>
+						<span v-else class="am-absenticon">—</span>
 					</div>
 				</div>
-				<div
-					class="am-bar"
-					:class="{ 'am-bar-flagged': row.flag === 'missing_punch' }"
-					@click="barClick($event, row)"
-				>
-					<div
-						v-for="(s, i) in row.segments"
-						:key="i"
-						class="am-seg"
-						:class="s.type === 'work' ? 'am-seg-work' : 'am-seg-break'"
-						:style="segStyle(s)"
-					></div>
-					<div
-						v-for="c in row.checkins"
-						:key="c.name"
-						class="am-dot"
-						:style="{ left: pct(toMs(c.time)) }"
-						:title="c.time.slice(11, 16)"
-						@click.stop="openEdit(row, c)"
-					></div>
-					<div v-if="isToday && nowInScale" class="am-nowline" :style="{ left: pct(nowMs) }"></div>
-				</div>
+				<TimelineRow
+					:row="row"
+					:date="date"
+					:scale-min="scale.min"
+					:scale-span="scale.span"
+					:is-today="isToday"
+					:now-ms-abs="isToday && nowInScale ? nowMs : -1"
+					@add="(t) => openAdd(row, t)"
+					@edit="(c) => openEdit(row, c)"
+					@dragsave="(p) => onDragSave(row, p)"
+				/>
 			</div>
 		</div>
 
@@ -99,13 +97,12 @@
 
 <script>
 import PunchDialog from "./PunchDialog.vue";
+import TimelineRow from "./TimelineRow.vue";
 import * as api from "./api.js";
-
-const DAY_MS = 86400000;
 
 export default {
 	name: "AttendanceMonitorApp",
-	components: { PunchDialog },
+	components: { PunchDialog, TimelineRow },
 	data() {
 		const today = new Date().toISOString().slice(0, 10);
 		return {
@@ -130,8 +127,14 @@ export default {
 				? this.rows.filter((r) => r.employee_name.toLowerCase().includes(q))
 				: this.rows;
 		},
+		scannedCount() {
+			return this.rows.filter((r) => r.checkins.length).length;
+		},
 		flaggedCount() {
-			return this.rows.filter((r) => r.flag).length;
+			return this.rows.filter((r) => r.flag && r.flag !== "no_scans").length;
+		},
+		absentCount() {
+			return this.rows.filter((r) => r.flag === "no_scans").length;
 		},
 		onSiteCount() {
 			return this.rows.filter((r) => this.onSite(r)).length;
@@ -199,6 +202,7 @@ export default {
 					from_date: this.date,
 					to_date: this.date,
 					company: this.company,
+					include_absent: 1,
 				})) || [];
 			} finally {
 				this.loading = false;
@@ -229,14 +233,6 @@ export default {
 			const p = ((ms - this.scale.min) / this.scale.span) * 100;
 			return Math.max(0, Math.min(100, p)) + "%";
 		},
-		segStyle(s) {
-			const a = this.toMs(s.start);
-			const b = this.toMs(s.end);
-			return {
-				left: this.pct(a),
-				width: `calc(${this.pct(b)} - ${this.pct(a)})`,
-			};
-		},
 		fmtH(h) {
 			const hh = Math.floor(h);
 			const mm = Math.round((h - hh) * 60);
@@ -251,18 +247,12 @@ export default {
 			return this.isToday && row.checkins.length % 2 === 1;
 		},
 		// --- corrections ---
-		barClick(ev, row) {
-			const rect = ev.currentTarget.getBoundingClientRect();
-			const frac = (ev.clientX - rect.left) / rect.width;
-			const ms = this.scale.min + frac * this.scale.span;
-			const rounded = Math.round(ms / 300000) * 300000; // 5-minute snap
-			const hh = String(Math.floor(rounded / 3600000)).padStart(2, "0");
-			const mm = String(Math.floor((rounded % 3600000) / 60000)).padStart(2, "0");
+		openAdd(row, prefill) {
 			this.dialog = {
 				mode: "add",
 				employee: row.employee,
 				employeeName: row.employee_name,
-				prefill: `${hh}:${mm}`,
+				prefill,
 				checkinName: null,
 			};
 		},
@@ -274,6 +264,16 @@ export default {
 				prefill: checkin.time.slice(11, 16),
 				checkinName: checkin.name,
 			};
+		},
+		async onDragSave(row, { name, time }) {
+			await api.updateCheckin({ name, time: `${this.date} ${time}:00` });
+			if (typeof frappe !== "undefined" && frappe.show_alert) {
+				frappe.show_alert({
+					message: `${row.employee_name} → ${time}`,
+					indicator: "green",
+				}, 3);
+			}
+			await this.load();
 		},
 		async onSave({ name, time }) {
 			this.saving = true;
@@ -416,52 +416,17 @@ export default {
 .am-okicon {
 	color: #9aa5ad;
 }
-.am-bar {
-	position: relative;
-	flex: 1;
-	height: 30px;
-	background: var(--control-bg, #f4f5f6);
-	border-radius: 6px;
-	cursor: copy;
+.am-absenticon {
+	color: #b6bfc6;
 }
-.am-bar-flagged {
-	outline: 1.5px dashed #e8a13c;
-	outline-offset: 1px;
+.am-row-absent .am-name {
+	color: var(--text-muted, #98a1a9);
+	font-weight: 400;
 }
-.am-seg {
-	position: absolute;
-	top: 6px;
-	bottom: 6px;
-	border-radius: 4px;
-}
-.am-seg-work {
-	background: #4caf7d;
-}
-.am-seg-break {
-	background: #f0b95e;
-}
-.am-dot {
-	position: absolute;
-	top: 50%;
-	width: 14px;
-	height: 14px;
-	margin: -7px 0 0 -7px;
-	border-radius: 50%;
-	background: #fff;
-	border: 2.5px solid #2c3e50;
-	cursor: pointer;
-	z-index: 2;
-}
-.am-dot:hover {
-	transform: scale(1.25);
-}
-.am-nowline {
-	position: absolute;
-	top: -2px;
-	bottom: -2px;
-	width: 2px;
-	background: #e74c3c;
-	z-index: 1;
+.am-chip-absent {
+	background: #f2f4f6;
+	color: #8a949c;
+	border: 1px dashed #c9d1d8;
 }
 .am-ruler-row {
 	border-bottom: none;
@@ -490,17 +455,6 @@ export default {
 	.am-rowhead {
 		width: 100%;
 		min-width: 0;
-	}
-	.am-bar {
-		/* in the stacked (column-flex) layout, flex-basis 0 would collapse the
-		   bar to zero height — pin it */
-		flex: none;
-		height: 38px;
-	}
-	.am-dot {
-		width: 18px;
-		height: 18px;
-		margin: -9px 0 0 -9px;
 	}
 	.am-ruler-row {
 		display: none;

@@ -8,8 +8,8 @@ function call(method, args) {
 	return frappe.call({ method: `${M}.${method}`, args }).then((r) => r.message);
 }
 
-export function fetchMonitor({ from_date, to_date, company }) {
-	return call("get_attendance_monitor", { from_date, to_date, company });
+export function fetchMonitor({ from_date, to_date, company, include_absent = 0 }) {
+	return call("get_attendance_monitor", { from_date, to_date, company, include_absent });
 }
 
 export function addCheckin({ employee, time }) {

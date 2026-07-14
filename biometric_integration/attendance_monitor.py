@@ -148,12 +148,17 @@ def get_monitor_companies() -> list[str]:
 
 @frappe.whitelist()
 def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
-                           window_seconds=180, expected_punches=4):
+                           window_seconds=180, expected_punches=4,
+                           include_absent=0):
     """Per employee-per-day net-time-on-site for a company's crew.
 
     Returns rows: {employee, employee_name, date, scans[iso], work_hours,
     break_hours, complete, flag, checkins:[{name,time}]}. Scoped by company
     (User Permission on Company further limits what the caller can see).
+
+    include_absent: on a single-day query, also return a row (empty scans,
+    flag "no_scans") for every active employee without a punch that day, so
+    supervisors see who did not show up.
     """
     _guard()
     _check_company(company)
@@ -161,6 +166,7 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     to_date = getdate(to_date or from_date)
     window_seconds = int(window_seconds)
     expected_punches = int(expected_punches) if expected_punches else None
+    include_absent = int(include_absent or 0) and from_date == to_date
 
     emps = frappe.get_all("Employee", filters={"company": company, "status": "Active"},
                           fields=["name", "employee_name"])
@@ -198,6 +204,22 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
             "complete": res["complete"],
             "flag": res["flag"],
         })
+
+    if include_absent:
+        scanned = {emp for (emp, _day) in buckets}
+        for emp in sorted(set(emp_names) - scanned, key=lambda e: emp_names.get(e, e)):
+            out.append({
+                "employee": emp,
+                "employee_name": emp_names.get(emp, emp),
+                "date": str(from_date),
+                "scans": [],
+                "checkins": [],
+                "work_hours": 0.0,
+                "break_hours": 0.0,
+                "segments": [],
+                "complete": False,
+                "flag": "no_scans",
+            })
     return out
 
 
