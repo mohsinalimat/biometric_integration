@@ -1,7 +1,7 @@
 <template>
 	<div
 		class="tr-bar"
-		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty, 'tr-live': drag }"
+		:class="{ 'tr-bar-flagged': row.flag === 'missing_punch', 'tr-bar-empty': isEmpty, 'tr-live': drag, 'tr-readonly': readonly }"
 		ref="bar"
 		@mousemove="onHover"
 		@mouseleave="hoverMs = null"
@@ -18,7 +18,9 @@
 			class="tr-seg"
 			:class="'tr-seg-' + s.type"
 			:style="{ left: pct(s.a), width: `calc(${pct(s.b)} - ${pct(s.a)})` }"
-		></div>
+		>
+			<span v-if="segWide(s)" class="tr-seg-dur">{{ dur(s.b - s.a) }}</span>
+		</div>
 
 		<!-- IN/OUT trim handles -->
 		<div
@@ -65,6 +67,7 @@ export default {
 		scaleSpan: { type: Number, required: true },
 		isToday: { type: Boolean, default: false },
 		nowMsAbs: { type: Number, default: -1 },
+		readonly: { type: Boolean, default: false },
 	},
 	emits: ["add", "edit", "dragsave"],
 	data() {
@@ -129,8 +132,9 @@ export default {
 				work += t[i + 1] - t[i];
 				if (i + 3 < t.length) brk += t[i + 2] - t[i + 1];
 			}
-			const f = (ms) => `${Math.floor(ms / 3600000)}:${String(Math.round((ms % 3600000) / 60000)).padStart(2, "0")}`;
-			return brk ? `${f(work)} ${this.t("work")} · ☕ ${f(brk)}` : `${f(work)} ${this.t("work")}`;
+			return brk
+				? `${this.dur(work)} ${this.t("work")} · ${this.dur(brk)} ${this.t("break")}`
+				: `${this.dur(work)} ${this.t("work")}`;
 		},
 	},
 	beforeUnmount() {
@@ -150,6 +154,16 @@ export default {
 		fmt(ms) {
 			return `${String(Math.floor(ms / 3600000)).padStart(2, "0")}:${String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0")}`;
 		},
+		dur(ms) {
+			// Frappe Duration style: "8h 30m", "30m", "0m"
+			const secs = Math.round((ms || 0) / 1000);
+			if (secs <= 0) return "0m";
+			return frappe.utils.get_formatted_duration(secs, { hide_days: 1, hide_seconds: 1 }) || "0m";
+		},
+		segWide(s) {
+			// only label segments wide enough to fit the text (avoid clutter)
+			return ((s.b - s.a) / this.scaleSpan) * 100 > 7;
+		},
 		pillStyle(ms) {
 			const p = ((ms - this.scaleMin) / this.scaleSpan) * 100;
 			if (p < 8) return { left: p + "%", transform: "translateX(0)" };
@@ -162,16 +176,16 @@ export default {
 			return Math.round((this.scaleMin + frac * this.scaleSpan) / SNAP) * SNAP;
 		},
 		onHover(ev) {
-			if (this.drag) return;
+			if (this.drag || this.readonly) return;
 			this.hoverMs = ev.target.classList.contains("tr-mark") ? null : this.eventMs(ev);
 		},
 		onBarClick(ev) {
-			if (this.suppressClick) return;
+			if (this.suppressClick || this.readonly) return;
 			this.$emit("add", { time: this.fmt(this.eventMs(ev)), x: ev.clientX, y: ev.clientY });
 		},
 		// ---- drag ----
 		startDrag(m, ev) {
-			if (ev.button !== 0) return;
+			if (ev.button !== 0 || this.readonly) return;
 			this.hoverMs = null;
 			this.drag = { name: m.name, origMs: m.ms, curMs: m.ms, moved: false };
 			this._onMove = (e) => this.dragMove(e);
@@ -266,6 +280,27 @@ body.tr-dragging * {
 	border-radius: 4px;
 	pointer-events: none;
 	transition: left 0.22s ease, width 0.22s ease;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+}
+.tr-seg-dur {
+	font-size: 10px;
+	font-weight: 600;
+	color: #fff;
+	white-space: nowrap;
+	text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
+}
+.tr-seg-unknown .tr-seg-dur {
+	color: #6c7680;
+	text-shadow: none;
+}
+.tr-readonly {
+	cursor: default;
+}
+.tr-readonly .tr-mark {
+	cursor: default;
 }
 .tr-seg-work {
 	background: #4caf7d;

@@ -21,6 +21,9 @@
   "trans_interval",
   "section_bio_sync",
   "enforce_fp_version_match",
+  "section_attendance",
+  "allow_checkin_corrections",
+  "attendance_processor",
   "section_endpoints",
   "zkteco_server_address",
   "ebkn_server_address",
@@ -133,6 +136,25 @@
    "fieldname": "enforce_fp_version_match",
    "fieldtype": "Check",
    "label": "Enforce Fingerprint Version Match"
+  },
+  {
+   "fieldname": "section_attendance",
+   "fieldtype": "Section Break",
+   "label": "Attendance Processing"
+  },
+  {
+   "default": "1",
+   "fieldname": "allow_checkin_corrections",
+   "fieldtype": "Check",
+   "label": "Allow Check-in Corrections in Monitor",
+   "description": "When enabled, users with the required role can add/move/delete punches from the Attendance Monitor. Disable to make the monitor strictly view-only (some sites do not allow anyone, including HR, to modify raw check-ins)."
+  },
+  {
+   "fieldname": "attendance_processor",
+   "fieldtype": "Link",
+   "options": "Server Script",
+   "label": "Attendance Processor (Server Script)",
+   "description": "OPTIONAL. A Server Script that (re)builds Attendance for one employee-day from raw Employee Checkins. When set, it runs after every check-in insert AND after Attendance Monitor corrections (add/edit/delete), so corrections stay in sync. Leave BLANK to rely on Frappe's native Shift Type auto-attendance instead. The script receives `doc` (an Employee Checkin carrying the employee + date to rebuild)."
   },
   {
    "description": "Configure your biometric devices to push data to these URLs",

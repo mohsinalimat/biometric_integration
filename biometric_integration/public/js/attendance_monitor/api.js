@@ -24,8 +24,8 @@ export function deleteCheckin({ name }) {
 	return call("delete_checkin", { name });
 }
 
-export function fetchCompanies() {
-	// Server returns the user's permitted companies (User Permission), or all
-	// for unrestricted users. Avoids needing base read-perm on Company.
-	return call("get_monitor_companies", {}).then((rows) => rows || []);
+export function fetchConfig() {
+	// { can_correct, companies } — companies respects User Permission; can_correct
+	// reflects the site's "Allow Check-in Corrections" toggle.
+	return call("get_monitor_config", {});
 }

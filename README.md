@@ -142,9 +142,27 @@ When a PIN first appears, an **Attendance Device User** is created automatically
 2. The PIN is mapped to an Employee via `Employee.attendance_device_id` (standard HRMS field, indexed).
 3. An **Employee Checkin** is created (idempotent — duplicate timestamps for the same employee are ignored).
 
-The device IN/OUT flag is intentionally **not** recorded; downstream attendance logic (first-in / last-out) is left to your HRMS / roster configuration.
+The device IN/OUT flag is intentionally **not** recorded — most fingerprint terminals stamp a generic value on every scan, so it is unreliable. Attendance is derived from the punches themselves (see **Attendance Monitor** below).
 
 Unmapped PINs are skipped by default (the punch is logged, no checkin is created). Set **Do Not Skip Unknown Employee Checkin** in Settings to create checkins for unmapped PINs anyway.
+
+---
+
+## Attendance Monitor
+
+A desk page (**Attendance Monitor**, roles: *Site Supervisor / HR User / HR Manager / System Manager*) that shows, per employee per day, an interactive timeline of punches with net time on site:
+
+- **Timeline per worker** — green work segments + amber break segments, each labelled with its duration; IN/OUT trim-handles; a "now" line on today; a hatched grey band for an unclassifiable stretch (odd punch count).
+- **Net-time model** — punches are paired in chronological order (1st = IN, 2nd = OUT, 3rd = IN …); work = sum of IN→OUT pairs, break = the gaps between them. Repeat scans within a short window collapse (double-taps). An odd count flags the day for review instead of miscomputing.
+- **Absent / leave / holiday** — employees with no punches show as *no punches*; an approved Leave Application that day shows *On leave*; a company holiday shows a banner.
+- **Corrections** — supervisors add a punch (click the bar), move one (drag a handle), or delete one (click → ✕). Each correction runs through the validated doc API and then re-syncs Attendance via the **Attendance Processor** (below).
+- **View-only mode** — set **Allow Check-in Corrections in Monitor** off to make the page strictly read-only (no add/move/delete), for sites that don't permit editing raw punches.
+
+### Attendance Processor (optional)
+
+Attendance can be (re)built from raw check-ins by a **Server Script you nominate** in Settings → *Attendance Processor*. It runs on every check-in insert and after every Monitor correction (add/edit/delete), so corrections stay in sync — the script receives a `doc` (Employee Checkin) carrying the employee + the day to rebuild.
+
+**This field is optional.** Leave it **blank** to rely on Frappe's native **Shift Type** auto-attendance (or no attendance at all). Because it's a Server Script, the attendance logic is swappable per site without changing app code. On edit/delete the Monitor first releases the day's existing Attendance (so the punch isn't locked), performs the change, then invokes the processor to rebuild — HR-set statuses (leave / holiday / half-day) are preserved.
 
 ---
 

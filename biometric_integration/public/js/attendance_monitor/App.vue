@@ -96,6 +96,7 @@
 					:scale-span="scale.span"
 					:is-today="isToday"
 					:now-ms-abs="isToday && nowInScale ? nowMs : -1"
+					:readonly="!canCorrect"
 					@add="(p) => openAdd(row, p)"
 					@edit="(p) => openEdit(row, p.checkin, p)"
 					@dragsave="(p) => onDragSave(row, p)"
@@ -144,6 +145,7 @@ export default {
 			dialog: null,
 			nowTick: Date.now(),
 			headWidth: Number(localStorage.getItem("am_head_w")) || 230,
+			canCorrect: false,
 		};
 	},
 	computed: {
@@ -227,9 +229,12 @@ export default {
 		},
 	},
 	mounted() {
-		// Resolve the permitted company list first so a restricted supervisor
-		// never issues a query for a company they can't access.
-		api.fetchCompanies().then((list) => {
+		// Bootstrap: permitted companies + whether corrections are allowed, so a
+		// restricted user never queries a forbidden company and the UI reflects
+		// the site's view-only setting.
+		api.fetchConfig().then((cfg) => {
+			this.canCorrect = !!(cfg && cfg.can_correct);
+			const list = (cfg && cfg.companies) || [];
 			this.companies = list;
 			if (list.length && !list.includes(this.company)) {
 				this.company = list[0];
@@ -326,9 +331,10 @@ export default {
 			return Math.max(0, Math.min(100, p)) + "%";
 		},
 		fmtH(h) {
-			const hh = Math.floor(h);
-			const mm = Math.round((h - hh) * 60);
-			return `${hh}:${String(mm).padStart(2, "0")}`;
+			// Frappe's Duration style: "8h 30m", "30m", "0m"
+			const secs = Math.round((h || 0) * 3600);
+			if (secs <= 0) return "0m";
+			return frappe.utils.get_formatted_duration(secs, { hide_days: 1, hide_seconds: 1 }) || "0m";
 		},
 		flagLabel(flag) {
 			return flag === "missing_punch"

@@ -127,7 +127,7 @@ def _h(seconds: int) -> float:
 # ---------------------------------------------------------------------------
 
 import frappe
-from frappe.utils import getdate, get_datetime
+from frappe.utils import getdate, get_datetime, cint
 
 _ALLOWED_ROLES = ("Site Supervisor", "HR User", "HR Manager", "System Manager")
 
@@ -171,6 +171,76 @@ def get_monitor_companies() -> list[str]:
     if allowed is not None:
         return allowed
     return frappe.get_all("Company", pluck="name", order_by="name")
+
+
+@frappe.whitelist()
+def get_monitor_config() -> dict:
+    """UI bootstrap: what the current user may do + how the page behaves."""
+    _guard()
+    return {
+        "can_correct": _corrections_enabled(),
+        "companies": get_monitor_companies(),
+    }
+
+
+def _corrections_enabled() -> bool:
+    return bool(cint(frappe.db.get_single_value(
+        "Attendance Integration Settings", "allow_checkin_corrections")))
+
+
+def _assert_corrections_enabled():
+    if not _corrections_enabled():
+        frappe.throw(frappe._("Check-in corrections are disabled for this site."),
+                     frappe.PermissionError)
+
+
+def _run_processor(employee: str, day):
+    """Invoke the configured attendance-processor Server Script for one
+    employee-day, if one is set. Blank → rely on Frappe's native Shift Type
+    auto-attendance (or nothing). The script receives a `doc` (Employee Checkin)
+    carrying the employee + the day to rebuild."""
+    script = frappe.db.get_single_value("Attendance Integration Settings", "attendance_processor")
+    if not script:
+        return
+    stub = frappe.new_doc("Employee Checkin")
+    stub.employee = employee
+    stub.time = f"{getdate(day)} 12:00:00"
+    frappe.get_doc("Server Script", script).execute_doc(stub)
+
+
+def _release_day_lock(employee: str, day):
+    """Cancel + remove the day's Attendance and unlink its check-ins, so an edit
+    or delete isn't blocked by 'attendance record is linked to this checkin'.
+    The processor rebuilds a fresh Attendance afterwards.
+
+    Messages are muted: HRMS emits an 'Unlinked Attendance record from Employee
+    Checkins' msgprint on cancel, which would otherwise pop a modal on every
+    correction.
+    """
+    day = getdate(day)
+    prev_mute = frappe.flags.mute_messages
+    frappe.flags.mute_messages = True
+    try:
+        for a in frappe.get_all("Attendance",
+                                filters={"employee": employee, "attendance_date": day,
+                                         "docstatus": ["!=", 2]},
+                                fields=["name", "docstatus"]):
+            # preserve HR-set leave/holiday/half-day days — only clear worked ones
+            status = frappe.db.get_value("Attendance", a.name, "status")
+            if status not in ("Present", "Absent", None, ""):
+                continue
+            if a.docstatus == 1:
+                frappe.get_doc("Attendance", a.name).cancel()
+            frappe.delete_doc("Attendance", a.name, force=True, ignore_permissions=True)
+        # unlink the day's check-ins
+        for c in frappe.get_all("Employee Checkin",
+                                filters={"employee": employee,
+                                         "time": ["between", [f"{day} 00:00:00", f"{day} 23:59:59"]],
+                                         "attendance": ["is", "set"]},
+                                pluck="name"):
+            frappe.db.set_value("Employee Checkin", c, "attendance", None, update_modified=False)
+    finally:
+        frappe.flags.mute_messages = prev_mute
 
 
 @frappe.whitelist()
@@ -286,8 +356,13 @@ def _holiday_on(company: str, day):
 
 @frappe.whitelist()
 def add_checkin(employee, time, device_id=None):
-    """Supervisor quick-correction: add a missing punch."""
+    """Supervisor quick-correction: add a missing punch.
+
+    The insert fires Employee Checkin's After-Insert events (incl. a processor
+    bound there), so no extra processor call is needed here.
+    """
     _guard()
+    _assert_corrections_enabled()
     _check_employee(employee)
     doc = frappe.new_doc("Employee Checkin")
     doc.employee = employee
@@ -303,14 +378,34 @@ def add_checkin(employee, time, device_id=None):
 def update_checkin(name, time):
     """Supervisor quick-correction: move a punch to the correct time.
 
-    Uses the doc API (not db.set_value) so validation + doc_events fire — an
-    edit goes through the same lifecycle as any other Employee Checkin change.
+    Uses the doc API (not db.set_value) so validation + doc_events fire. The
+    day's Attendance is released first (so the edit isn't blocked by a linked
+    submitted Attendance), then the processor rebuilds it from the new punches.
     """
     _guard()
+    _assert_corrections_enabled()
+    row = frappe.db.get_value("Employee Checkin", name, ["employee", "time"], as_dict=True)
+    _check_employee(row.employee)
+    employee = row.employee
+    old_day = getdate(row.time)
+    new_dt = get_datetime(time)
+    new_day = getdate(new_dt)
+
+    # Release the day's Attendance + unlink its check-ins FIRST, then load the
+    # checkin fresh so its `attendance` link is already cleared (a stale link to
+    # a just-deleted Attendance would fail save's link validation).
+    _release_day_lock(employee, old_day)
+    if new_day != old_day:
+        _release_day_lock(employee, new_day)
+
     doc = frappe.get_doc("Employee Checkin", name)
-    _check_employee(doc.employee)
-    doc.time = get_datetime(time)
+    doc.time = new_dt
     doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    _run_processor(employee, new_day)
+    if new_day != old_day:
+        _run_processor(employee, old_day)
     frappe.db.commit()
     return True
 
@@ -319,7 +414,16 @@ def update_checkin(name, time):
 def delete_checkin(name):
     """Supervisor quick-correction: remove a stray/duplicate punch."""
     _guard()
-    _check_employee(frappe.db.get_value("Employee Checkin", name, "employee"))
+    _assert_corrections_enabled()
+    doc = frappe.get_doc("Employee Checkin", name)
+    _check_employee(doc.employee)
+    employee = doc.employee
+    day = getdate(doc.time)
+
+    _release_day_lock(employee, day)
     frappe.delete_doc("Employee Checkin", name, ignore_permissions=True)
+    frappe.db.commit()
+
+    _run_processor(employee, day)
     frappe.db.commit()
     return True
