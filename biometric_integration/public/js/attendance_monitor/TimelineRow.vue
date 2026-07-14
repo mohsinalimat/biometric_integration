@@ -70,7 +70,11 @@ export default {
 			return !this.row.checkins.length;
 		},
 		emptyLabel() {
-			return this.t("no scans — click to add");
+			if (this.row.flag === "on_leave") {
+				return "🌴 " + this.t("On leave") + (this.row.leave_type ? " — " + this.row.leave_type : "");
+			}
+			if (this.row.holiday) return "🎉 " + this.t("Holiday");
+			return this.t("no punches — click to add");
 		},
 		inLabel() {
 			return this.t("in");

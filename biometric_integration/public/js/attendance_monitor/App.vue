@@ -32,18 +32,22 @@
 			</select>
 		</div>
 
+		<!-- Holiday banner -->
+		<div v-if="holiday" class="am-holiday-banner">🎉 {{ __("Holiday") }}: {{ holiday }}</div>
+
 		<!-- Summary chips -->
 		<div class="am-chips">
 			<span class="am-chip">{{ scannedCount }} {{ __("scanned") }}</span>
 			<span class="am-chip am-chip-flag" v-if="flaggedCount">⚠ {{ flaggedCount }} {{ __("flagged") }}</span>
 			<span class="am-chip am-chip-now" v-if="isToday">● {{ onSiteCount }} {{ __("on site now") }}</span>
-			<span class="am-chip am-chip-absent" v-if="absentCount">◌ {{ absentCount }} {{ __("no scans") }}</span>
+			<span class="am-chip am-chip-leave" v-if="leaveCount">🌴 {{ leaveCount }} {{ __("on leave") }}</span>
+			<span class="am-chip am-chip-absent" v-if="absentCount">◌ {{ absentCount }} {{ __("no punches") }}</span>
 		</div>
 
 		<!-- Rows -->
 		<div v-if="loading" class="am-empty">{{ __("Loading…") }}</div>
 		<div v-else-if="!filteredRows.length" class="am-empty">
-			{{ __("No scans for this day.") }}
+			{{ __("No punches for this day.") }}
 		</div>
 		<div v-else class="am-list" :style="{ '--head-w': headWidth + 'px' }">
 			<!-- Hour ruler -->
@@ -67,18 +71,19 @@
 				v-for="row in filteredRows"
 				:key="row.employee + row.date"
 				class="am-row"
-				:class="{ 'am-row-absent': row.flag === 'no_scans' }"
+				:class="{ 'am-row-absent': isEmptyRow(row) }"
 			>
 				<div class="am-rowhead">
 					<div class="am-name" :title="row.employee">{{ row.employee_name }}</div>
 					<div class="am-hours">
-						<template v-if="row.flag !== 'no_scans'">
+						<template v-if="!isEmptyRow(row)">
 							<span class="am-work">{{ fmtH(row.work_hours) }}</span>
 							<span class="am-break" v-if="row.break_hours">☕ {{ fmtH(row.break_hours) }}</span>
 							<span v-if="row.flag" class="am-flagicon" :title="flagLabel(row.flag)">⚠</span>
 							<span v-else-if="onSite(row)" class="am-nowicon" :title="__('On site now')">●</span>
 							<span v-else class="am-okicon">✓</span>
 						</template>
+						<span v-else-if="row.flag === 'on_leave'" class="am-leavetag">🌴 {{ row.leave_type }}</span>
 						<span v-else class="am-absenticon">—</span>
 					</div>
 				</div>
@@ -152,20 +157,31 @@ export default {
 		},
 		filteredRows() {
 			const q = this.search.toLowerCase();
-			return this.rows.filter(
-				(r) =>
-					(!q || r.employee_name.toLowerCase().includes(q)) &&
-					(!this.department || r.department === this.department)
-			);
+			// Always sort by employee name so a row keeps its position when it
+			// changes from absent→scanned (adding a punch no longer makes it jump).
+			return this.rows
+				.filter(
+					(r) =>
+						(!q || r.employee_name.toLowerCase().includes(q)) &&
+						(!this.department || r.department === this.department)
+				)
+				.slice()
+				.sort((a, b) => a.employee_name.localeCompare(b.employee_name));
+		},
+		holiday() {
+			return (this.rows[0] && this.rows[0].holiday) || "";
 		},
 		scannedCount() {
 			return this.rows.filter((r) => r.checkins.length).length;
 		},
 		flaggedCount() {
-			return this.rows.filter((r) => r.flag && r.flag !== "no_scans").length;
+			return this.rows.filter((r) => r.flag === "missing_punch" || r.flag === "unexpected_count").length;
+		},
+		leaveCount() {
+			return this.rows.filter((r) => r.flag === "on_leave").length;
 		},
 		absentCount() {
-			return this.rows.filter((r) => r.flag === "no_scans").length;
+			return this.rows.filter((r) => r.flag === "no_punches").length;
 		},
 		onSiteCount() {
 			return this.rows.filter((r) => this.onSite(r)).length;
@@ -318,6 +334,9 @@ export default {
 		},
 		onSite(row) {
 			return this.isToday && row.checkins.length % 2 === 1;
+		},
+		isEmptyRow(row) {
+			return !row.checkins.length;
 		},
 		// --- corrections ---
 		openAdd(row, { time, x, y }) {
@@ -567,6 +586,24 @@ body.am-resizing * {
 	background: #f2f4f6;
 	color: #8a949c;
 	border: 1px dashed #c9d1d8;
+}
+.am-chip-leave {
+	background: #eaf5ee;
+	color: #2f7d4f;
+}
+.am-leavetag {
+	font-size: 12px;
+	color: #2f7d4f;
+	white-space: nowrap;
+}
+.am-holiday-banner {
+	background: #fdf6e3;
+	border: 1px solid #f0e2b6;
+	color: #8a6d1a;
+	border-radius: 8px;
+	padding: 7px 12px;
+	font-size: 13px;
+	margin-bottom: 12px;
 }
 .am-ruler-row {
 	border-bottom: none;

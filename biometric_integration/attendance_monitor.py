@@ -236,7 +236,9 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
 
     if include_absent:
         scanned = {emp for (emp, _day) in buckets}
+        leave_map = _leaves_on(list(emp_names), from_date)
         for emp in sorted(set(emp_names) - scanned, key=lambda e: emp_names.get(e, e)):
+            leave = leave_map.get(emp)
             out.append({
                 "employee": emp,
                 "employee_name": emp_names.get(emp, emp),
@@ -248,9 +250,38 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
                 "break_hours": 0.0,
                 "segments": [],
                 "complete": False,
-                "flag": "no_scans",
+                "flag": "on_leave" if leave else "no_punches",
+                "leave_type": leave,
             })
+
+    # Holiday label is the same for the whole company/day — stamp it on every
+    # row so the UI can show one banner (only meaningful on a single-day view).
+    holiday = _holiday_on(company, from_date) if from_date == to_date else None
+    if holiday:
+        for r in out:
+            r["holiday"] = holiday
     return out
+
+
+def _leaves_on(employees: list[str], day) -> dict:
+    """{employee: leave_type} for approved Leave Applications covering `day`."""
+    if not employees:
+        return {}
+    rows = frappe.get_all(
+        "Leave Application",
+        filters={"employee": ["in", employees], "status": "Approved",
+                 "from_date": ["<=", day], "to_date": [">=", day]},
+        fields=["employee", "leave_type"],
+    )
+    return {r.employee: r.leave_type for r in rows}
+
+
+def _holiday_on(company: str, day):
+    """Holiday description if `day` is a holiday in the company's default list."""
+    hl = frappe.db.get_value("Company", company, "default_holiday_list")
+    if not hl:
+        return None
+    return frappe.db.get_value("Holiday", {"parent": hl, "holiday_date": day}, "description")
 
 
 @frappe.whitelist()
