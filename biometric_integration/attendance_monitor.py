@@ -301,10 +301,16 @@ def add_checkin(employee, time, device_id=None):
 
 @frappe.whitelist()
 def update_checkin(name, time):
-    """Supervisor quick-correction: move a punch to the correct time."""
+    """Supervisor quick-correction: move a punch to the correct time.
+
+    Uses the doc API (not db.set_value) so validation + doc_events fire — an
+    edit goes through the same lifecycle as any other Employee Checkin change.
+    """
     _guard()
-    _check_employee(frappe.db.get_value("Employee Checkin", name, "employee"))
-    frappe.db.set_value("Employee Checkin", name, "time", get_datetime(time))
+    doc = frappe.get_doc("Employee Checkin", name)
+    _check_employee(doc.employee)
+    doc.time = get_datetime(time)
+    doc.save(ignore_permissions=True)
     frappe.db.commit()
     return True
 
