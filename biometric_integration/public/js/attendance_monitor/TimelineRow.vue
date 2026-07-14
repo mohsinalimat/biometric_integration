@@ -29,7 +29,7 @@
 			class="tr-mark"
 			:class="['tr-mark-' + m.io, { 'tr-mark-drag': drag && drag.name === m.name }]"
 			:style="{ left: pct(m.ms) }"
-			:title="fmt(m.ms) + ' · ' + (m.io === 'in' ? inLabel : outLabel)"
+			:title="fmt(m.ms) + ' · ' + markLabel(m.io)"
 			@mousedown.prevent.stop="startDrag(m, $event)"
 			@click.stop
 		></div>
@@ -101,17 +101,34 @@ export default {
 		// Single source of truth: every punch as {name, ms, io}, sorted by time,
 		// with the dragged one at its live position. Segments + totals derive
 		// from this, so the whole bar moves together during a drag (no jump).
+		isSpan() {
+			// First-in / last-out shift: whole span is worked, no breaks. Only the
+			// first and last punch bound the time; the ones between are informational.
+			return this.row.mode === "span";
+		},
 		markers() {
 			const list = this.row.checkins.map((c) => ({
 				name: c.name,
 				ms: this.drag && this.drag.name === c.name ? this.drag.curMs : this.toMs(c.time),
 			}));
 			list.sort((a, b) => a.ms - b.ms);
-			list.forEach((m, i) => (m.io = i % 2 === 0 ? "in" : "out"));
+			if (this.isSpan) {
+				// first = in, last = out, everything between = a dimmed "mid" punch
+				list.forEach((m, i) => {
+					m.io = i === 0 ? "in" : i === list.length - 1 ? "out" : "mid";
+				});
+				if (list.length === 1) list[0].io = "in";
+			} else {
+				list.forEach((m, i) => (m.io = i % 2 === 0 ? "in" : "out"));
+			}
 			return list;
 		},
 		segments() {
 			const t = this.markers.map((m) => m.ms);
+			if (this.isSpan) {
+				// one continuous work bar first->last, no break/unknown
+				return t.length >= 2 ? [{ type: "work", a: t[0], b: t[t.length - 1] }] : [];
+			}
 			const segs = [];
 			let i = 0;
 			for (; i + 1 < t.length; i += 2) {
@@ -126,6 +143,10 @@ export default {
 		},
 		liveTotals() {
 			const t = this.markers.map((m) => m.ms);
+			if (this.isSpan) {
+				const work = t.length >= 2 ? t[t.length - 1] - t[0] : 0;
+				return `${this.dur(work)} ${this.t("work")}`;
+			}
 			let work = 0;
 			let brk = 0;
 			for (let i = 0; i + 1 < t.length; i += 2) {
@@ -143,6 +164,11 @@ export default {
 	methods: {
 		t(s) {
 			return typeof __ !== "undefined" ? __(s) : s;
+		},
+		markLabel(io) {
+			if (io === "in") return this.inLabel;
+			if (io === "out") return this.outLabel;
+			return this.t("punch");
 		},
 		toMs(iso) {
 			return new Date(iso).getTime() - new Date(this.date + "T00:00:00").getTime();
@@ -339,6 +365,15 @@ body.tr-dragging * {
 }
 .tr-mark-out {
 	background-color: #e06a2e;
+}
+/* span mode: punches between first and last are informational — dim them */
+.tr-mark-mid {
+	background-color: #94a3b8;
+	opacity: 0.5;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+}
+.tr-mark-mid:hover {
+	opacity: 0.85;
 }
 .tr-mark:hover {
 	transform: scaleX(1.35);

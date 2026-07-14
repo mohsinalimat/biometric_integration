@@ -56,6 +56,8 @@ fixtures = [
             "Employee Checkin-device_id-fieldtype",
             "Employee Checkin-device_id-options",
             "Employee-attendance_device_id-mandatory_depends_on",
+            "Shift Type-auto_attendance_settings_section-depends_on",
+            "Shift Type-working_hours_calculation_based_on-description",
         ]]],
     },
 ]

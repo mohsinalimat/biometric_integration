@@ -246,7 +246,7 @@ def _release_day_lock(employee: str, day):
 @frappe.whitelist()
 def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
                            window_seconds=180, expected_punches=4,
-                           include_absent=0, mode="pairs"):
+                           include_absent=0, mode=None):
     """Per employee-per-day net-time-on-site for a company's crew.
 
     Returns rows: {employee, employee_name, date, scans[iso], work_hours,
@@ -266,11 +266,14 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     include_absent = int(include_absent or 0) and from_date == to_date
 
     emps = frappe.get_all("Employee", filters={"company": company, "status": "Active"},
-                          fields=["name", "employee_name", "department"])
+                          fields=["name", "employee_name", "department", "default_shift"])
     emp_names = {e.name: e.employee_name for e in emps}
     emp_dept = {e.name: (e.department or "") for e in emps}
+    emp_default_shift = {e.name: e.default_shift for e in emps}
     if not emp_names:
         return []
+
+    mode_of = _shift_mode_resolver(list(emp_names), emp_default_shift, from_date, to_date)
 
     rows = frappe.get_all(
         "Employee Checkin",
@@ -288,12 +291,14 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     out = []
     for (emp, day), items in sorted(buckets.items(), key=lambda x: (emp_names.get(x[0][0], ""), x[0][1])):
         times = [t for _, t in items]
-        res = compute_day(times, window_seconds, expected_punches, mode=mode)
+        row_mode = mode or mode_of(emp, day)
+        res = compute_day(times, window_seconds, expected_punches, mode=row_mode)
         out.append({
             "employee": emp,
             "employee_name": emp_names.get(emp, emp),
             "department": emp_dept.get(emp, ""),
             "date": str(day),
+            "mode": row_mode,
             "scans": [t.isoformat() for t in res["scans"]],
             "checkins": [{"name": nm, "time": t.isoformat()} for nm, t in sorted(items, key=lambda x: x[1])],
             "work_hours": _h(res["work_seconds"]),
@@ -314,6 +319,7 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
                 "employee_name": emp_names.get(emp, emp),
                 "department": emp_dept.get(emp, ""),
                 "date": str(from_date),
+                "mode": mode or mode_of(emp, from_date),
                 "scans": [],
                 "checkins": [],
                 "work_hours": 0.0,
@@ -331,6 +337,43 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
         for r in out:
             r["holiday"] = holiday
     return out
+
+
+def _shift_mode_resolver(employees: list[str], emp_default_shift: dict, from_date, to_date):
+    """Build a fast `mode_of(employee, day) -> "pairs"|"span"` closure.
+
+    An employee's attendance mode follows their Shift Type's native
+    "Working Hours Calculation Based On" field:
+      "First Check-in and Last Check-out"    → span  (whole first->last, no break)
+      "Every Valid Check-in and Check-out"   → pairs (sum of IN->OUT pairs)
+    The shift for a day is the active Shift Assignment covering it, else the
+    employee's default shift. No shift / blank field → pairs (safe default).
+    """
+    shift_mode: dict = {}
+    for st in frappe.get_all("Shift Type", fields=["name", "working_hours_calculation_based_on"]):
+        shift_mode[st.name] = ("span" if st.working_hours_calculation_based_on
+                               == "First Check-in and Last Check-out" else "pairs")
+
+    assigns = frappe.get_all(
+        "Shift Assignment",
+        filters={"employee": ["in", employees], "docstatus": 1, "status": "Active",
+                 "start_date": ["<=", to_date]},
+        fields=["employee", "shift_type", "start_date", "end_date"],
+        order_by="start_date asc",
+    ) if employees else []
+    by_emp: dict = {}
+    for a in assigns:
+        by_emp.setdefault(a.employee, []).append(a)
+
+    def mode_of(emp, day):
+        shift = None
+        for a in by_emp.get(emp, []):
+            if a.start_date <= day and (not a.end_date or a.end_date >= day):
+                shift = a.shift_type  # last match wins → most recent covering assignment
+        shift = shift or emp_default_shift.get(emp)
+        return shift_mode.get(shift, "pairs")
+
+    return mode_of
 
 
 def _leaves_on(employees: list[str], day) -> dict:
