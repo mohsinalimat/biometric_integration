@@ -174,13 +174,14 @@ export default {
 		},
 	},
 	mounted() {
-		this.load();
+		// Resolve the permitted company list first so a restricted supervisor
+		// never issues a query for a company they can't access.
 		api.fetchCompanies().then((list) => {
 			this.companies = list;
 			if (list.length && !list.includes(this.company)) {
 				this.company = list[0];
-				this.load();
 			}
+			this.load();
 		});
 		this._timer = setInterval(() => (this.nowTick = Date.now()), 60000);
 	},

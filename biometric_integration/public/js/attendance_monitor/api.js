@@ -25,7 +25,7 @@ export function deleteCheckin({ name }) {
 }
 
 export function fetchCompanies() {
-	// Respects User Permissions automatically (supervisors only see VGH).
-	return frappe.db.get_list("Company", { fields: ["name"], limit: 0 })
-		.then((rows) => rows.map((r) => r.name));
+	// Server returns the user's permitted companies (User Permission), or all
+	// for unrestricted users. Avoids needing base read-perm on Company.
+	return call("get_monitor_companies", {}).then((rows) => rows || []);
 }

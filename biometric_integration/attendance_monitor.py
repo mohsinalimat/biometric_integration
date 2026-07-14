@@ -110,6 +110,42 @@ def _guard():
         frappe.throw(frappe._("Not permitted"), frappe.PermissionError)
 
 
+def _permitted_companies() -> list[str] | None:
+    """Companies the session user is restricted to via User Permission.
+
+    Returns None when unrestricted (no Company User Permissions), else the list.
+    """
+    rows = frappe.get_all(
+        "User Permission",
+        filters={"user": frappe.session.user, "allow": "Company"},
+        pluck="for_value",
+    )
+    return rows or None
+
+
+def _check_company(company: str) -> None:
+    allowed = _permitted_companies()
+    if allowed is not None and company not in allowed:
+        frappe.throw(frappe._("Not permitted for company {0}").format(company),
+                     frappe.PermissionError)
+
+
+def _check_employee(employee: str) -> None:
+    """Corrections may only touch employees of a permitted company."""
+    company = frappe.db.get_value("Employee", employee, "company")
+    _check_company(company)
+
+
+@frappe.whitelist()
+def get_monitor_companies() -> list[str]:
+    """Companies selectable in the monitor: the user's permitted list, or all."""
+    _guard()
+    allowed = _permitted_companies()
+    if allowed is not None:
+        return allowed
+    return frappe.get_all("Company", pluck="name", order_by="name")
+
+
 @frappe.whitelist()
 def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
                            window_seconds=180, expected_punches=4):
@@ -120,6 +156,7 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
     (User Permission on Company further limits what the caller can see).
     """
     _guard()
+    _check_company(company)
     from_date = getdate(from_date)
     to_date = getdate(to_date or from_date)
     window_seconds = int(window_seconds)
@@ -168,6 +205,7 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
 def add_checkin(employee, time, device_id=None):
     """Supervisor quick-correction: add a missing punch."""
     _guard()
+    _check_employee(employee)
     doc = frappe.new_doc("Employee Checkin")
     doc.employee = employee
     doc.time = get_datetime(time)
@@ -182,6 +220,7 @@ def add_checkin(employee, time, device_id=None):
 def update_checkin(name, time):
     """Supervisor quick-correction: move a punch to the correct time."""
     _guard()
+    _check_employee(frappe.db.get_value("Employee Checkin", name, "employee"))
     frappe.db.set_value("Employee Checkin", name, "time", get_datetime(time))
     frappe.db.commit()
     return True
@@ -191,6 +230,7 @@ def update_checkin(name, time):
 def delete_checkin(name):
     """Supervisor quick-correction: remove a stray/duplicate punch."""
     _guard()
+    _check_employee(frappe.db.get_value("Employee Checkin", name, "employee"))
     frappe.delete_doc("Employee Checkin", name, ignore_permissions=True)
     frappe.db.commit()
     return True
