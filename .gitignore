@@ -13,3 +13,5 @@ gemini_research.txt
 docs/
 *.pdf
 .claude-flow/
+
+biometric_integration/public/dist/
