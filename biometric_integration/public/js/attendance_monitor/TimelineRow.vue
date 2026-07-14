@@ -7,7 +7,9 @@
 		@mouseleave="hoverMs = null"
 		@click="onBarClick"
 	>
-		<span v-if="isEmpty && !hoverMs" class="tr-empty-label">{{ emptyLabel }}</span>
+		<span v-if="isEmpty && !hoverMs" class="tr-empty-label">
+			<Icon :name="emptyIcon" size="13" /> {{ emptyText }}
+		</span>
 
 		<!-- segments (work / break / unknown) — derived live from marker positions -->
 		<div
@@ -33,7 +35,7 @@
 		<!-- hover ghost -->
 		<template v-if="hoverMs !== null && !drag">
 			<div class="tr-ghost" :style="{ left: pct(hoverMs) }"></div>
-			<div class="tr-pill" :style="pillStyle(hoverMs)">＋ {{ fmt(hoverMs) }}</div>
+			<div class="tr-pill" :style="pillStyle(hoverMs)">+ {{ fmt(hoverMs) }}</div>
 		</template>
 
 		<!-- drag feedback -->
@@ -49,10 +51,13 @@
 </template>
 
 <script>
+import Icon from "./Icon.vue";
+
 const SNAP = 300000; // 5 minutes
 
 export default {
 	name: "TimelineRow",
+	components: { Icon },
 	props: {
 		row: { type: Object, required: true },
 		date: { type: String, required: true },
@@ -69,11 +74,16 @@ export default {
 		isEmpty() {
 			return !this.row.checkins.length;
 		},
-		emptyLabel() {
+		emptyIcon() {
+			if (this.row.flag === "on_leave") return "umbrella";
+			if (this.row.holiday) return "calendar";
+			return "plus";
+		},
+		emptyText() {
 			if (this.row.flag === "on_leave") {
-				return "🌴 " + this.t("On leave") + (this.row.leave_type ? " — " + this.row.leave_type : "");
+				return this.t("On leave") + (this.row.leave_type ? " — " + this.row.leave_type : "");
 			}
-			if (this.row.holiday) return "🎉 " + this.t("Holiday");
+			if (this.row.holiday) return this.t("Holiday");
 			return this.t("no punches — click to add");
 		},
 		inLabel() {
@@ -244,6 +254,7 @@ body.tr-dragging * {
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	gap: 5px;
 	font-size: 11px;
 	color: var(--text-muted, #a3adb5);
 	pointer-events: none;

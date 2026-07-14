@@ -33,15 +33,17 @@
 		</div>
 
 		<!-- Holiday banner -->
-		<div v-if="holiday" class="am-holiday-banner">🎉 {{ __("Holiday") }}: {{ holiday }}</div>
+		<div v-if="holiday" class="am-holiday-banner">
+			<Icon name="calendar" /> {{ __("Holiday") }}: {{ holiday }}
+		</div>
 
 		<!-- Summary chips -->
 		<div class="am-chips">
 			<span class="am-chip">{{ scannedCount }} {{ __("scanned") }}</span>
-			<span class="am-chip am-chip-flag" v-if="flaggedCount">⚠ {{ flaggedCount }} {{ __("flagged") }}</span>
-			<span class="am-chip am-chip-now" v-if="isToday">● {{ onSiteCount }} {{ __("on site now") }}</span>
-			<span class="am-chip am-chip-leave" v-if="leaveCount">🌴 {{ leaveCount }} {{ __("on leave") }}</span>
-			<span class="am-chip am-chip-absent" v-if="absentCount">◌ {{ absentCount }} {{ __("no punches") }}</span>
+			<span class="am-chip am-chip-flag" v-if="flaggedCount"><Icon name="alert" size="12" /> {{ flaggedCount }} {{ __("flagged") }}</span>
+			<span class="am-chip am-chip-now" v-if="isToday"><Icon name="dot" size="12" /> {{ onSiteCount }} {{ __("on site now") }}</span>
+			<span class="am-chip am-chip-leave" v-if="leaveCount"><Icon name="umbrella" size="12" /> {{ leaveCount }} {{ __("on leave") }}</span>
+			<span class="am-chip am-chip-absent" v-if="absentCount"><Icon name="minus" size="12" /> {{ absentCount }} {{ __("no punches") }}</span>
 		</div>
 
 		<!-- Rows -->
@@ -78,13 +80,13 @@
 					<div class="am-hours">
 						<template v-if="!isEmptyRow(row)">
 							<span class="am-work">{{ fmtH(row.work_hours) }}</span>
-							<span class="am-break" v-if="row.break_hours">☕ {{ fmtH(row.break_hours) }}</span>
-							<span v-if="row.flag" class="am-flagicon" :title="flagLabel(row.flag)">⚠</span>
-							<span v-else-if="onSite(row)" class="am-nowicon" :title="__('On site now')">●</span>
-							<span v-else class="am-okicon">✓</span>
+							<span class="am-break" v-if="row.break_hours"><Icon name="coffee" size="12" /> {{ fmtH(row.break_hours) }}</span>
+							<span v-if="row.flag" class="am-flagicon" :title="flagLabel(row.flag)"><Icon name="alert" /></span>
+							<span v-else-if="onSite(row)" class="am-nowicon" :title="__('On site now')"><Icon name="dot" size="11" /></span>
+							<span v-else class="am-okicon" :title="__('Complete')"><Icon name="check" /></span>
 						</template>
-						<span v-else-if="row.flag === 'on_leave'" class="am-leavetag">🌴 {{ row.leave_type }}</span>
-						<span v-else class="am-absenticon">—</span>
+						<span v-else-if="row.flag === 'on_leave'" class="am-leavetag"><Icon name="umbrella" size="13" /> {{ row.leave_type }}</span>
+						<span v-else class="am-absenticon"><Icon name="minus" /></span>
 					</div>
 				</div>
 				<TimelineRow
@@ -121,11 +123,12 @@
 <script>
 import PunchDialog from "./PunchDialog.vue";
 import TimelineRow from "./TimelineRow.vue";
+import Icon from "./Icon.vue";
 import * as api from "./api.js";
 
 export default {
 	name: "AttendanceMonitorApp",
-	components: { PunchDialog, TimelineRow },
+	components: { PunchDialog, TimelineRow, Icon },
 	data() {
 		const n = new Date();
 		const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
@@ -557,26 +560,34 @@ body.am-resizing * {
 	font-size: 12px;
 	display: flex;
 	gap: 8px;
-	align-items: baseline;
+	align-items: center;
 	white-space: nowrap;
+}
+.am-hours > span {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
 }
 .am-work {
 	font-weight: 600;
 }
 .am-break {
-	color: #b45309;
+	color: var(--text-muted, #7a848c);
 }
 .am-flagicon {
-	color: #d97706;
+	color: #b8791f; /* restrained amber — the one thing worth noticing */
 }
 .am-nowicon {
-	color: #1e9e56;
+	color: #5a9c7a; /* muted green */
 }
 .am-okicon {
-	color: #9aa5ad;
+	color: #b6bfc6;
 }
 .am-absenticon {
 	color: #b6bfc6;
+}
+.am-leavetag {
+	color: var(--text-muted, #7a848c);
 }
 .am-row-absent .am-name {
 	color: var(--text-muted, #98a1a9);
@@ -588,18 +599,16 @@ body.am-resizing * {
 	border: 1px dashed #c9d1d8;
 }
 .am-chip-leave {
-	background: #eaf5ee;
-	color: #2f7d4f;
-}
-.am-leavetag {
-	font-size: 12px;
-	color: #2f7d4f;
-	white-space: nowrap;
+	background: var(--control-bg, #f4f5f6);
+	color: var(--text-muted, #6c7680);
 }
 .am-holiday-banner {
-	background: #fdf6e3;
-	border: 1px solid #f0e2b6;
-	color: #8a6d1a;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	background: var(--control-bg, #f6f7f8);
+	border: 1px solid var(--border-color, #e3e7ea);
+	color: var(--text-muted, #6c7680);
 	border-radius: 8px;
 	padding: 7px 12px;
 	font-size: 13px;
