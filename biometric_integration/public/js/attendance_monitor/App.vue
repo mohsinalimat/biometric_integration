@@ -132,9 +132,21 @@ export default {
 	name: "AttendanceMonitorApp",
 	components: { PunchDialog, TimelineRow, Icon },
 	data() {
-		const n = new Date();
-		const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+		// The timeline axis is the SITE's wall clock (punches are site-local naive
+		// datetimes). So "today" and the now-line must use the site timezone, not
+		// the viewer's browser zone (e.g. an Amsterdam site viewed from Dhaka).
+		const siteTz =
+			(typeof frappe !== "undefined" && frappe.sys_defaults && frappe.sys_defaults.time_zone) ||
+			(typeof frappe !== "undefined" && frappe.boot && frappe.boot.time_zone &&
+				(frappe.boot.time_zone.system || frappe.boot.time_zone)) ||
+			Intl.DateTimeFormat().resolvedOptions().timeZone;
+		const parts = new Intl.DateTimeFormat("en-GB", {
+			timeZone: siteTz, year: "numeric", month: "2-digit", day: "2-digit",
+		}).formatToParts(new Date());
+		const g = (t) => parts.find((x) => x.type === t).value;
+		const today = `${g("year")}-${g("month")}-${g("day")}`;
 		return {
+			siteTz,
 			date: today,
 			company: "VGH B.V.",
 			companies: [],
@@ -268,8 +280,7 @@ export default {
 			}
 		},
 		localToday() {
-			const d = new Date();
-			return this.fmtDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+			return this.siteNow().ymd;
 		},
 		fmtDate(y, m, d) {
 			return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -326,9 +337,26 @@ export default {
 		hourToMs(h) {
 			return h * 3600000;
 		},
-		nowMsAbs() {
+		// Current site wall-clock time as {ymd, ms-since-site-midnight}. Reactive on
+		// nowTick so the now-line advances. Read via Intl in the site timezone.
+		siteNow() {
 			this.nowTick; // reactive dependency
-			return Date.now() - new Date(this.date + "T00:00:00").getTime();
+			const p = new Intl.DateTimeFormat("en-GB", {
+				timeZone: this.siteTz, year: "numeric", month: "2-digit", day: "2-digit",
+				hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+			}).formatToParts(new Date());
+			const g = (t) => p.find((x) => x.type === t).value;
+			let hh = parseInt(g("hour"), 10);
+			if (hh === 24) hh = 0; // some engines emit "24" at midnight
+			return {
+				ymd: `${g("year")}-${g("month")}-${g("day")}`,
+				ms: ((hh * 60 + parseInt(g("minute"), 10)) * 60 + parseInt(g("second"), 10)) * 1000,
+			};
+		},
+		nowMsAbs() {
+			// Only meaningful when the selected date is the site's today (template
+			// gates with isToday); then now sits at its site wall-clock position.
+			return this.siteNow().ms;
 		},
 		pct(ms) {
 			const p = ((ms - this.scale.min) / this.scale.span) * 100;
