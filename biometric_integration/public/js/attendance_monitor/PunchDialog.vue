@@ -69,7 +69,7 @@ export default {
 	},
 	mounted() {
 		this.$refs.timeInput && this.$refs.timeInput.focus();
-		// close on outside click — deferred so the opening click doesn't self-close
+		// close on outside click - deferred so the opening click doesn't self-close
 		setTimeout(() => {
 			this._outside = (e) => {
 				if (this.$refs.card && !this.$refs.card.contains(e.target)) this.$emit("close");

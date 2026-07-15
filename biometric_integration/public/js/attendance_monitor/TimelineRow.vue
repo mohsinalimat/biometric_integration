@@ -11,7 +11,7 @@
 			<Icon :name="emptyIcon" size="13" /> {{ emptyText }}
 		</span>
 
-		<!-- segments (work / break / unknown) — derived live from marker positions -->
+		<!-- segments (work / break / unknown) - derived live from marker positions -->
 		<div
 			v-for="(s, i) in segments"
 			:key="'s' + i"
@@ -85,10 +85,10 @@ export default {
 		},
 		emptyText() {
 			if (this.row.flag === "on_leave") {
-				return this.t("On leave") + (this.row.leave_type ? " — " + this.row.leave_type : "");
+				return this.t("On leave") + (this.row.leave_type ? " · " + this.row.leave_type : "");
 			}
 			if (this.row.holiday) return this.t("Holiday");
-			return this.t("no punches — click to add");
+			return this.t("no punches · click to add");
 		},
 		inLabel() {
 			return this.t("in");
@@ -391,7 +391,7 @@ body.tr-dragging * {
 .tr-mark-out {
 	background-color: #e06a2e;
 }
-/* span mode: punches between first and last are informational — dim them */
+/* span mode: punches between first and last are informational - dim them */
 .tr-mark-mid {
 	background-color: #94a3b8;
 	opacity: 0.5;

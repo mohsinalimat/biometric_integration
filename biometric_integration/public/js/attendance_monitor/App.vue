@@ -37,13 +37,13 @@
 			<Icon name="calendar" /> {{ __("Holiday") }}: {{ holiday }}
 		</div>
 
-		<!-- Summary chips -->
+		<!-- Summary chips (click to filter the rows to that group; click again to clear) -->
 		<div class="am-chips">
-			<span class="am-chip">{{ scannedCount }} {{ __("scanned") }}</span>
-			<span class="am-chip am-chip-flag" v-if="flaggedCount"><Icon name="alert" size="12" /> {{ flaggedCount }} {{ __("flagged") }}</span>
-			<span class="am-chip am-chip-now" v-if="isToday"><Icon name="dot" size="12" /> {{ onSiteCount }} {{ __("on site now") }}</span>
-			<span class="am-chip am-chip-leave" v-if="leaveCount"><Icon name="umbrella" size="12" /> {{ leaveCount }} {{ __("on leave") }}</span>
-			<span class="am-chip am-chip-absent" v-if="absentCount"><Icon name="minus" size="12" /> {{ absentCount }} {{ __("no punches") }}</span>
+			<button class="am-chip" :class="{ 'am-chip-active': chipFilter === 'scanned' }" @click="toggleChip('scanned')">{{ scannedCount }} {{ __("scanned") }}</button>
+			<button class="am-chip am-chip-flag" :class="{ 'am-chip-active': chipFilter === 'flagged' }" v-if="flaggedCount" @click="toggleChip('flagged')"><Icon name="alert" size="12" /> {{ flaggedCount }} {{ __("flagged") }}</button>
+			<button class="am-chip am-chip-now" :class="{ 'am-chip-active': chipFilter === 'on_site' }" v-if="isToday" @click="toggleChip('on_site')"><Icon name="dot" size="12" /> {{ onSiteCount }} {{ __("on site now") }}</button>
+			<button class="am-chip am-chip-leave" :class="{ 'am-chip-active': chipFilter === 'on_leave' }" v-if="leaveCount" @click="toggleChip('on_leave')"><Icon name="umbrella" size="12" /> {{ leaveCount }} {{ __("on leave") }}</button>
+			<button class="am-chip am-chip-absent" :class="{ 'am-chip-active': chipFilter === 'no_punches' }" v-if="absentCount" @click="toggleChip('no_punches')"><Icon name="minus" size="12" /> {{ absentCount }} {{ __("no punches") }}</button>
 		</div>
 
 		<!-- Rows -->
@@ -140,6 +140,7 @@ export default {
 			companies: [],
 			department: "",
 			search: "",
+			chipFilter: "", // "" | scanned | flagged | on_site | on_leave | no_punches
 			rows: [],
 			loading: false,
 			saving: false,
@@ -170,7 +171,8 @@ export default {
 				.filter(
 					(r) =>
 						(!q || r.employee_name.toLowerCase().includes(q)) &&
-						(!this.department || r.department === this.department)
+						(!this.department || r.department === this.department) &&
+						(!this.chipFilter || this.chipMatch(r, this.chipFilter))
 				)
 				.slice()
 				.sort((a, b) => a.employee_name.localeCompare(b.employee_name));
@@ -273,7 +275,7 @@ export default {
 			return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 		},
 		shiftDay(n) {
-			// build the date from LOCAL parts — toISOString() would shift by the
+			// build the date from LOCAL parts - toISOString() would shift by the
 			// UTC offset (CEST) and eat the increment.
 			const [y, m, d] = this.date.split("-").map(Number);
 			const nd = new Date(y, m - 1, d + n);
@@ -340,11 +342,25 @@ export default {
 		},
 		flagLabel(flag) {
 			return flag === "missing_punch"
-				? this.__("Missing punch — odd number of scans")
+				? this.__("Missing punch · odd number of scans")
 				: this.__("Unexpected number of scans");
 		},
 		onSite(row) {
 			return this.isToday && row.checkins.length % 2 === 1;
+		},
+		// Predicate behind each summary chip; keep in sync with the *Count computeds.
+		chipMatch(row, key) {
+			switch (key) {
+				case "scanned": return !!row.checkins.length;
+				case "flagged": return row.flag === "missing_punch" || row.flag === "unexpected_count";
+				case "on_site": return this.onSite(row);
+				case "on_leave": return row.flag === "on_leave";
+				case "no_punches": return row.flag === "no_punches";
+				default: return true;
+			}
+		},
+		toggleChip(key) {
+			this.chipFilter = this.chipFilter === key ? "" : key;
 		},
 		isEmptyRow(row) {
 			return !row.checkins.length;
@@ -372,7 +388,7 @@ export default {
 				y: pos.y || 120,
 			};
 		},
-		// Replace one row in place (preserving list order) — used to silently
+		// Replace one row in place (preserving list order) - used to silently
 		// reconcile with the server's recomputed row after a correction, with no
 		// full reload / reflow / reorder.
 		patchRow(updated) {
@@ -421,7 +437,7 @@ export default {
 					? await api.addCheckin({ employee, time })
 					: await api.updateCheckin({ name, time });
 				this.dialog = null;
-				this.patchRow(updated); // patch in place — no reflow
+				this.patchRow(updated); // patch in place - no reflow
 			} catch (e) {
 				this.notifyError(e);
 			} finally {
@@ -524,9 +540,25 @@ body.am-resizing * {
 }
 .am-chip {
 	background: var(--control-bg, #f4f5f6);
+	border: 1px solid transparent;
 	border-radius: 20px;
 	padding: 4px 12px;
 	font-size: 12px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	transition: filter 0.12s, box-shadow 0.12s;
+	color: inherit;
+}
+.am-chip:hover {
+	filter: brightness(0.96);
+}
+/* active filter: ring in the chip's own colour so it reads as "on" */
+.am-chip-active {
+	border-color: currentColor;
+	box-shadow: 0 0 0 1px currentColor inset;
+	font-weight: 600;
 }
 .am-chip-flag {
 	background: #fdf0e7;
@@ -617,7 +649,7 @@ body.am-resizing * {
 	color: var(--text-muted, #7a848c);
 }
 .am-flagicon {
-	color: #b8791f; /* restrained amber — the one thing worth noticing */
+	color: #b8791f; /* restrained amber - the one thing worth noticing */
 }
 .am-nowicon {
 	color: #5a9c7a; /* muted green */

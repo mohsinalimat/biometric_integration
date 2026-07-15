@@ -1,4 +1,4 @@
-// Thin transport adapter — the only file that knows about the desk (`frappe.call`).
+// Thin transport adapter - the only file that knows about the desk (`frappe.call`).
 // A future mobile shell replaces this module with frappe-ui resources / fetch,
 // keeping App.vue and PunchDialog.vue unchanged.
 
@@ -25,7 +25,7 @@ export function deleteCheckin({ name }) {
 }
 
 export function fetchConfig() {
-	// { can_correct, companies } — companies respects User Permission; can_correct
+	// { can_correct, companies } - companies respects User Permission; can_correct
 	// reflects the site's "Allow Check-in Corrections" toggle.
 	return call("get_monitor_config", {});
 }
