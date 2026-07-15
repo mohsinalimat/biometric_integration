@@ -456,7 +456,7 @@ body.am-resizing * {
 <style scoped>
 .am-root {
 	padding: 12px 16px 48px;
-	max-width: 1400px;
+	width: 100%;
 }
 .am-toolbar {
 	display: flex;
