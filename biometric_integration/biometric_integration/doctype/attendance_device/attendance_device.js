@@ -29,6 +29,47 @@ frappe.ui.form.on('Attendance Device', {
 			});
 		}, __('Commands'));
 
+		// Unified enrollment capture — same action & wording for every brand. Under
+		// the hood: ZKTeco replays users + fingerprints via CHECK/OPERLOG; EBKN
+		// enumerates users then pulls each template. The user never sees the difference.
+		frm.add_custom_button(__('Sync Enrollments'), () => {
+			const d = new frappe.ui.Dialog({
+				title: __('Sync Enrollments — {0}', [frm.doc.device_name || frm.doc.name]),
+				fields: [{ fieldname: 'status_html', fieldtype: 'HTML' }],
+			});
+			d.get_field('status_html').$wrapper.html(
+				`<div class="text-center py-3">
+					<div class="spinner-border text-primary mb-2" role="status" style="width:2rem;height:2rem;"></div>
+					<div class="text-muted">${__('Sending command to device…')}</div>
+				</div>`
+			);
+			d.show();
+			frappe.call({
+				method: 'biometric_integration.api.create_device_command',
+				args: { device_id: frm.doc.name, command_type: 'Pull From Device' },
+				callback(r) {
+					if (!r.message) {
+						d.get_field('status_html').$wrapper.html(
+							`<div class="text-center py-3 text-danger"><b>${__('Failed to queue command')}</b></div>`
+						);
+						return;
+					}
+					d.get_field('status_html').$wrapper.html(
+						`<div class="text-center py-3">
+							<div class="text-primary mb-1" style="font-size:2rem;">&#8681;</div>
+							<b>${__('Sync Enrollments command sent')}</b>
+							<div class="text-muted small mt-2">${__('On its next poll the device uploads all users and their enrolled fingerprint templates. Captured enrollments are stored here as a backup and can be restored to another device of the same model.')}</div>
+							<div class="text-muted small mt-1">${__('Reload after a short while; watch Device Logs for progress.')}</div>
+						</div>`
+					);
+					d.set_primary_action(__('View Device Logs'), () => {
+						d.hide();
+						frappe.set_route('List', 'Attendance Device Log', { attendance_device: frm.doc.name });
+					});
+				},
+			});
+		}, __('Commands'));
+
 		frm.add_custom_button(__('Sync User List'), () => {
 			const d = new frappe.ui.Dialog({
 				title: __('Sync User List \u2014 {0}', [frm.doc.device_name || frm.doc.name]),

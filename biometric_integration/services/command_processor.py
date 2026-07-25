@@ -187,16 +187,20 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
         return f"C:{cmd_doc.name}:GET OPTIONS {keys}"
 
     if cmd_doc.command_type == "Pull From Device":
-        # ZKTeco resync: with OPERLOGStamp=0 in the handshake, a CHECK makes the
-        # device re-upload its full user table + every locally-enrolled fingerprint
-        # as OPERLOG records (USER / FP lines) via /iclock/cdata — which the normal
-        # ingest path stores. This is how a finger enrolled ON the device is captured
-        # into ERPNext (then transferable to other devices via Enroll User).
-        # Done-on-send; the uploads arrive asynchronously as separate POSTs.
+        # Brand-agnostic "capture everything off this device" — pulls each user AND
+        # their enrolled biometric templates into ERPNext (the backup + the source
+        # for restoring/copying to another device via Enroll User). Each brand reaches
+        # the same outcome by its own protocol:
         brand = frappe.db.get_value("Attendance Device", device_sn, "brand")
-        if brand != "ZKTeco":
-            _finish(cmd_doc, "Failed", "Pull From Device is only supported for ZKTeco devices.")
-            return None
+        if brand == "EBKN":
+            # No bulk replay: enumerate the device's users; _process_ebkn_user_id_list
+            # then queues a Get Enroll Data per user (per-user pull works on EBKN),
+            # which captures each template. Stays Sent → send_cmd_result resolves it.
+            return {"trans_id": cmd_doc.name, "cmd_code": "GET_USER_ID_LIST", "body": ""}
+        # ZKTeco: with OPERLOGStamp=0 in the handshake, a CHECK makes the device
+        # re-upload its full user table + every locally-enrolled fingerprint as
+        # OPERLOG records (USER / FP lines) via /iclock/cdata — the normal ingest
+        # path stores them. Done-on-send; uploads arrive asynchronously as POSTs.
         _finish(cmd_doc, "Success", "Sent: CHECK (device replays users + fingerprints via OPERLOG)")
         return f"C:{cmd_doc.name}:CHECK"
 
