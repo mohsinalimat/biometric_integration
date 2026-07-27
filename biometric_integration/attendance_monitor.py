@@ -40,7 +40,8 @@ def dedup_punches(times: list[datetime], window_seconds: int = 180) -> list[date
 
 
 def compute_day(times: list[datetime], window_seconds: int = 180,
-                expected_punches: Optional[int] = 4, mode: str = "pairs") -> dict:
+                expected_punches: Optional[int] = 4, mode: str = "pairs",
+                is_today: bool = False) -> dict:
     """Turn one employee-day's raw punches into work/break seconds + segments.
 
     mode:
@@ -73,7 +74,9 @@ def compute_day(times: list[datetime], window_seconds: int = 180,
             "break_seconds": 0,
             "segments": [{"type": "work", "start": scans[0], "end": scans[-1]}] if n >= 2 else [],
             "complete": n >= 2,
-            "flag": None if n >= 2 else "missing_punch",
+            # A single punch is only "missing" once the day is over. Today it just
+            # means the worker is still on site (checked in, not yet out).
+            "flag": None if (n >= 2 or is_today) else "missing_punch",
         }
 
     segments: list[dict] = []
@@ -100,13 +103,13 @@ def compute_day(times: list[datetime], window_seconds: int = 180,
         segments.append({"type": "unknown", "start": scans[-2], "end": scans[-1]})
 
     complete = (n % 2 == 0) and n > 0
+    # Flag ONLY a genuinely unpaired punch on a finished day. Breaks are not
+    # scanned here, so an even count (IN/OUT, no breaks) is normal — never flagged
+    # on count alone (the old "unexpected_count" is dropped). And an odd count for
+    # TODAY just means the worker is still clocked in, so it is not flagged either.
     flag = None
-    if n == 0:
-        flag = None
-    elif n % 2 == 1:
-        flag = "missing_punch"          # odd -> a scan was missed
-    elif expected_punches and n != expected_punches:
-        flag = "unexpected_count"       # e.g. only 2 on a 4-punch policy
+    if n % 2 == 1 and not is_today:
+        flag = "missing_punch"          # odd punches on a past day -> a scan was missed
 
     return {
         "scans": scans,
@@ -326,7 +329,8 @@ def get_attendance_monitor(from_date, to_date=None, company="VGH B.V.",
 def _row_dict(emp, name, dept, day, items, mode, window_seconds=180, expected_punches=4):
     """Build one employee-day monitor row from `items` = [(checkin_name, datetime)]."""
     times = [t for _, t in items]
-    res = compute_day(times, window_seconds, expected_punches, mode=mode)
+    is_today = getdate(day) == getdate()
+    res = compute_day(times, window_seconds, expected_punches, mode=mode, is_today=is_today)
     return {
         "employee": emp,
         "employee_name": name or emp,
