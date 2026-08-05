@@ -9,6 +9,7 @@
   "user_id",
   "employee",
   "employee_name",
+  "privilege",
   "column_break_1",
   "allow_in_all_devices",
   "section_devices",
@@ -88,6 +89,14 @@
    "fieldtype": "Attach",
    "label": "EBKN Template",
    "description": "Private file containing the user's enrollment blob for EBKN devices"
+  },
+  {
+   "fieldname": "privilege",
+   "fieldtype": "Select",
+   "label": "Device Privilege",
+   "options": "Normal User\nEnroller\nAdmin\nSuper Admin",
+   "default": "Normal User",
+   "description": "Rights this user has ON the device keypad/menu. Pushed with every user sync, so an admin is never silently demoted. Normal User = clock in/out only."
   }
  ],
  "index_web_pages_for_search": 1,
