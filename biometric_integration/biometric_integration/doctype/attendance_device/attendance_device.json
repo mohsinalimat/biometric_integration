@@ -16,6 +16,9 @@
   "section_status",
   "last_contact",
   "last_synced_id",
+  "last_attlog_stamp",
+  "last_operlog_stamp",
+  "force_full_resync",
   "column_break_2",
   "device_ip",
   "device_port",
@@ -151,7 +154,7 @@
    "fieldtype": "Small Text",
    "label": "Supported Biometrics",
    "read_only": 1,
-   "description": "Comma-separated list e.g. FP,FACE,CARD — populated automatically on device registration"
+   "description": "Comma-separated list e.g. FP,FACE,CARD \u2014 populated automatically on device registration"
   },
   {
    "fieldname": "column_break_cap",
@@ -168,7 +171,7 @@
    "fieldtype": "Int",
    "label": "Fingerprint Algorithm Version",
    "read_only": 1,
-   "description": "ZKTeco FP algorithm version (e.g. 10). Templates only transfer between devices sharing the same version — populated automatically from device options (Refresh Device Info)."
+   "description": "ZKTeco FP algorithm version (e.g. 10). Templates only transfer between devices sharing the same version \u2014 populated automatically from device options (Refresh Device Info)."
   },
   {
    "fieldname": "fp_version_override",
@@ -221,6 +224,27 @@
    "fieldtype": "Check",
    "label": "Disable Employee Sync",
    "description": "Prevents Enroll/Delete User commands from being queued for this device"
+  },
+  {
+   "fieldname": "last_attlog_stamp",
+   "fieldtype": "Data",
+   "label": "Last ATTLOG Stamp",
+   "read_only": 1,
+   "description": "Cursor echoed back to the device so it only re-sends NEW punches. Blank = ask for full history (safe, duplicates are skipped)."
+  },
+  {
+   "fieldname": "last_operlog_stamp",
+   "fieldtype": "Data",
+   "label": "Last OPERLOG Stamp",
+   "read_only": 1,
+   "description": "Cursor for the operation log (user edits + on-device enrollments). Blank = full replay."
+  },
+  {
+   "fieldname": "force_full_resync",
+   "fieldtype": "Check",
+   "label": "Force Full Resync",
+   "default": "0",
+   "description": "Set by Sync Enrollments: the next handshake asks the device to replay everything, then this clears itself."
   }
  ],
  "index_web_pages_for_search": 1,

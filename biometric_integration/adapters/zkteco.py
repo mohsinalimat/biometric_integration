@@ -27,6 +27,7 @@ import re
 from datetime import datetime, timezone
 
 import frappe
+from frappe.utils import cint
 from werkzeug.wrappers import Response
 
 from biometric_integration.adapters.base import AbstractDeviceAdapter
@@ -165,12 +166,20 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
                       force=True)
             return self.text("ERROR: Device not registered.")
 
+        # The device's own upload cursor. We echo it back on the next handshake so
+        # it only re-sends NEW records instead of its whole history every time.
+        stamp = args.get("Stamp") or args.get("stamp")
+
         if table == "ATTLOG":
-            return self._process_attlog(sn, body_str)
+            resp = self._process_attlog(sn, body_str)
+            _save_stamp(sn, "last_attlog_stamp", stamp)  # only after a successful ingest
+            return resp
         if table == "rtlog":
             return self._process_rtlog(sn, body_str)
         if table == "OPERLOG":
-            return self._process_operlog(sn, body_str)
+            resp = self._process_operlog(sn, body_str)
+            _save_stamp(sn, "last_operlog_stamp", stamp)
+            return resp
         if table == "options":
             # Device pushes its capabilities (firmware, MAC, max users, FP/face
             # algorithm versions, function switches). Capture them onto the device.
@@ -773,19 +782,66 @@ def _localize_device_timestamp(naive_ts: datetime, sn: str | None) -> datetime:
         return naive_ts  # fall back to as-is
 
 
+def _save_stamp(sn: str | None, field: str, stamp: str | None) -> None:
+    """Persist the device's upload cursor AFTER its batch was ingested.
+
+    Called only once the records in that POST have been processed, so the cursor
+    can never run ahead of what we actually hold — a crash mid-batch just leaves
+    the old (lower) cursor, and the device re-sends. Never moves backwards, and a
+    missing/blank stamp is left alone so we keep asking for everything (safe).
+    """
+    if not sn or stamp is None:
+        return
+    stamp = str(stamp).strip()
+    if not stamp or stamp == "0":
+        return
+    try:
+        current = frappe.db.get_value("Attendance Device", sn, field)
+        # Numeric cursors must only ever advance; non-numeric ones are replaced.
+        if current and str(current).isdigit() and stamp.isdigit():
+            if int(stamp) <= int(current):
+                return
+        frappe.db.set_value("Attendance Device", sn, field, stamp, update_modified=False)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(title="ZKTeco stamp persist failed",
+                         message=f"device={sn} field={field} stamp={stamp!r}")
+
+
 def _build_config_options(sn: str | None) -> str:
     """Build the ADMS 'GET OPTION' config block sent at handshake / push.
 
-    OPERLOGStamp=0 (not 9999): the device only uploads operlog records NEWER than
-    this watermark, and operlog is how a device delivers user edits AND locally
-    enrolled fingerprint templates (`USER PIN=..` / `FP PIN=..\tFID=..\tTMP=..`).
-    A high watermark (9999) suppressed that upload entirely, so on-device
-    enrollments never reached the server. 0 = "upload everything" — matching
-    ZKTeco's own reference iclock server, which resyncs by setting the stamps to 0.
-    ATTLOGStamp stays a per-device watermark so punches aren't re-sent every boot.
+    Stamps are the device's upload cursors: it re-sends everything NEWER than the
+    value we echo back. `0` means "send your entire history".
+
+    We echo the cursor the device itself gave us on its last successful upload
+    (last_attlog_stamp / last_operlog_stamp). Pinning these to 0 permanently made
+    every handshake trigger a full re-dump of all punches + the whole operation
+    log; on a device with many users/punches that saturates its flash and CPU, so
+    fingerprint matching starves ("please try again"), and a reboot does not help
+    because the loop restarts on reconnect.
+
+    Fail-safe: when we have no cursor yet (or a deliberate resync is requested via
+    force_full_resync, used by Sync Enrollments to replay locally-enrolled
+    fingerprints) we send 0 = send everything. Duplicate check-ins are rejected
+    idempotently, so a full resend is always safe — never lossy, only slower.
     """
     settings = frappe.get_cached_doc("Attendance Integration Settings")
-    last_sync_id = get_last_sync_id(sn) if sn else 0
+    att_stamp = oper_stamp = "0"
+    if sn:
+        dev = frappe.db.get_value(
+            "Attendance Device", sn,
+            ["last_attlog_stamp", "last_operlog_stamp", "force_full_resync"], as_dict=True,
+        ) or {}
+        if cint(dev.get("force_full_resync")):
+            # One-off deliberate full replay; clear the flag so the next handshake
+            # goes back to incremental.
+            frappe.db.set_value("Attendance Device", sn, "force_full_resync", 0,
+                                update_modified=False)
+            frappe.db.commit()
+        else:
+            att_stamp = str(dev.get("last_attlog_stamp") or "0")
+            oper_stamp = str(dev.get("last_operlog_stamp") or "0")
     poll_delay = int(settings.device_poll_delay or 10)
     error_delay = int(settings.device_error_delay or 30)
     trans_times = settings.trans_times or "00:00;14:05"
@@ -800,8 +856,8 @@ def _build_config_options(sn: str | None) -> str:
     bio = (frappe.db.get_value("Attendance Device", sn, "supported_biometrics") if sn else None)
     multibio = bio if (bio and ":" in bio) else "0:1:0:0:0:0:0:0:0:0"
     return (
-        f"ATTLOGStamp={last_sync_id}\n"
-        "OPERLOGStamp=0\n"
+        f"ATTLOGStamp={att_stamp}\n"
+        f"OPERLOGStamp={oper_stamp}\n"
         "ATTPHOTOStamp=None\n"
         f"ErrorDelay={error_delay}\n"
         f"Delay={poll_delay}\n"

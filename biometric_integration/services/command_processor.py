@@ -197,10 +197,15 @@ def process_device_command(device_sn: str) -> Optional[Union[str, dict]]:
             # then queues a Get Enroll Data per user (per-user pull works on EBKN),
             # which captures each template. Stays Sent → send_cmd_result resolves it.
             return {"trans_id": cmd_doc.name, "cmd_code": "GET_USER_ID_LIST", "body": ""}
-        # ZKTeco: with OPERLOGStamp=0 in the handshake, a CHECK makes the device
-        # re-upload its full user table + every locally-enrolled fingerprint as
-        # OPERLOG records (USER / FP lines) via /iclock/cdata — the normal ingest
-        # path stores them. Done-on-send; uploads arrive asynchronously as POSTs.
+        # ZKTeco: a CHECK makes the device re-upload its full user table + every
+        # locally-enrolled fingerprint as OPERLOG records (USER / FP lines) via
+        # /iclock/cdata — the normal ingest path stores them. The replay only
+        # happens if the handshake asks for everything, so request a one-off full
+        # resync (stamps -> 0); the next handshake clears the flag and returns to
+        # incremental, so this never becomes a permanent re-dump loop.
+        frappe.db.set_value("Attendance Device", device_sn, "force_full_resync", 1,
+                            update_modified=False)
+        frappe.db.commit()
         _finish(cmd_doc, "Success", "Sent: CHECK (device replays users + fingerprints via OPERLOG)")
         return f"C:{cmd_doc.name}:CHECK"
 
