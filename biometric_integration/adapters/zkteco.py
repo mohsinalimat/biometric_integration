@@ -53,6 +53,15 @@ class ZKTecoAdapter(AbstractDeviceAdapter):
         path = self.path  # e.g. "/iclock/cdata"
         args = self.request.args
 
+        # Any authenticated request proves the device is alive. Previously only the
+        # handshake/registry paths recorded this, so a device that polled for
+        # commands and uploaded punches (but did not re-handshake) looked offline
+        # for days — misleading on the form indicator and when diagnosing. The
+        # write is debounced to once per minute per device, so this is cheap.
+        _sn = args.get("SN") or args.get("sn")
+        if _sn and is_registered_device(_sn):
+            touch_device(_sn)
+
         if "/iclock/cdata" in path:
             return self._handle_cdata(args)
         if "/iclock/getrequest" in path:
